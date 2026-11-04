@@ -107,7 +107,7 @@ export const LuckyWheelModal: React.FC<LuckyWheelModalProps> = ({
     try {
       reservedAt = await reserveCloudDailySpin(profile.id);
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Không xác nhận được lượt quay với Firebase.');
+      alert('Chưa thể xác nhận lượt quay. Vui lòng thử lại sau.');
       reservationInFlightRef.current = false;
       setIsReserving(false);
       return;

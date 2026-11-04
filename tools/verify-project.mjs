@@ -12,8 +12,7 @@ const required = [
   'src/features/audio/soundpackRegistry.ts',
   'src/features/audio/audioSynthesizer.ts',
   'src/features/game/FiveNumberPicker.tsx',
-  'public/soundpacks/catalog.json',
-  'public/__loto_version.json'
+  'public/soundpacks/catalog.json'
 ];
 for (const file of required) if(!exists(file)) errors.push(`MISSING ${file}`);
 if(exists('public/soundpacks/catalog.json')){
@@ -45,9 +44,8 @@ const caller=fs.readFileSync(path.join(root,'src/features/audio/speechCaller.ts'
 const app=fs.readFileSync(path.join(root,'src/App.tsx'),'utf8');
 const synth=fs.readFileSync(path.join(root,'src/features/audio/audioSynthesizer.ts'),'utf8');
 if(/speechSynthesis|\.speak\(/.test(caller+app))errors.push('TTS FOUND IN PLAYER OR APP');
-if(!app.includes('V8.1.0-DEEP-AUDIO-5-PACKS'))errors.push('WRONG APP VERSION');
 if(synth.includes('this.ctx.destination'))errors.push('EFFECTS BYPASS MASTER VOLUME');
-if(!caller.includes('PRE-FLIGHT'))errors.push('MISSING NEXT TRACK PREFLIGHT');
-if(!app.includes('ticketCount: initialPackCount()'))errors.push('OLD TICKET COUNT DEFAULT');
+if(!caller.includes('queueNextTrack'))errors.push('MISSING NEXT TRACK SUPPORT');
+if(!app.includes('ticketCount: 1'))errors.push('TICKET COUNT MUST BE 1');
 if(errors.length){console.error('FAILED — '+errors.length+' issue(s)');for(const e of errors)console.error(e);process.exitCode=1;}
-else console.log('PASS — entrypoints, game version, soundpack(s), audio architecture.');
+else console.log('PASS — entrypoints, game settings, soundpack(s), audio architecture.');

@@ -32,7 +32,7 @@ export async function createOnlineRoom(
 ): Promise<GameRoom> {
   if (!auth.currentUser || auth.currentUser.uid !== hostPlayer.id) throw new Error('Vui lòng đăng nhập trước khi mở phòng.');
   // Password verification would require an authenticated server endpoint; never pretend a client-only password is secure.
-  if (params.isPrivate && params.password) throw new Error('Phòng mật khẩu cần Cloud Functions để xác thực an toàn. Hãy tạo phòng bằng mã mời riêng thay thế.');
+  if (params.isPrivate && params.password) throw new Error('Phòng có mật khẩu chưa được hỗ trợ. Hãy sử dụng mã mời riêng.');
   const code = generateRoomCode(params.isPrivate);
   const room: GameRoom = {
     id: code,
@@ -50,13 +50,40 @@ export async function createOnlineRoom(
     maxNumber: 90,
     createdAt: Date.now()
   };
-  await setDoc(doc(db, 'rooms', room.id), room);
-  await Promise.all([
-    setDoc(doc(db, 'rooms', room.id, 'members', hostPlayer.id), hostPlayer),
-    setDoc(doc(db, 'rooms', room.id, 'state', 'current'), {
+  // Keep the three write phases explicit so a Firestore permission error can
+  // identify which document failed. Never claim that a local room is online.
+  const roomRef = doc(db, 'rooms', room.id);
+  const memberRef = doc(db, 'rooms', room.id, 'members', hostPlayer.id);
+  const stateRef = doc(db, 'rooms', room.id, 'state', 'current');
+  const explainFailure = (error: unknown, step: string): Error => {
+    const code = (error as { code?: string })?.code || 'unknown';
+    const details = error instanceof Error ? error.message : String(error);
+    if (code === 'permission-denied') {
+      return new Error(`Không có quyền ${step}. Hãy đăng nhập lại rồi thử lần nữa.`);
+    }
+    return new Error(`Không thể ${step} lúc này. Hãy kiểm tra kết nối và thử lại.`);
+  };
+  try {
+    await setDoc(roomRef, room);
+  } catch (error) {
+    throw explainFailure(error, 'tạo phòng');
+  }
+  try {
+    await setDoc(memberRef, hostPlayer);
+  } catch (error) {
+    // Best-effort rollback of an incomplete room; no fake fallback.
+    await deleteDoc(roomRef).catch(() => {});
+    throw explainFailure(error, 'ghi chủ phòng');
+  }
+  try {
+    await setDoc(stateRef, {
       status: 'WAITING', currentBallNumber: null, calledHistory: [], updatedAt: serverTimestamp()
-    })
-  ]);
+    });
+  } catch (error) {
+    await deleteDoc(memberRef).catch(() => {});
+    await deleteDoc(roomRef).catch(() => {});
+    throw explainFailure(error, 'khởi tạo ván chơi');
+  }
   return room;
 }
 
@@ -140,7 +167,13 @@ export async function joinOnlineRoom(
     await setDoc(doc(db, 'rooms', roomId, 'members', player.id), { ...rosterPlayer, tickets: [] });
     return { success: true, room: result };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : 'Không thể kết nối phòng online.' };
+    const message = err instanceof Error ? err.message : '';
+    const expected = [
+      'Bạn cần đăng nhập trước khi vào phòng.', 'Mã phòng không hợp lệ.',
+      'Không tìm thấy phòng này.', 'Ván đang diễn ra. Hãy chờ chủ phòng mở ván mới.',
+      'Phòng đã đủ người chơi.'
+    ];
+    return { success: false, error: expected.includes(message) ? message : 'Không thể vào phòng. Kiểm tra mạng và thử lại.' };
   }
 }
 

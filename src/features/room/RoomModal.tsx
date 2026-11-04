@@ -10,7 +10,7 @@ interface RoomModalProps {
   publicRooms: GameRoom[];
   cloudError?: string | null;
   cloudReady?: boolean;
-  onCreateRoom: (roomData: { name: string; isPrivate: boolean; password?: string; callSpeed: number; maxPlayers: number }) => void;
+  onCreateRoom: (roomData: { name: string; isPrivate: boolean; password?: string; callSpeed: number; maxPlayers: number }) => Promise<void>;
   onJoinRoom: (code: string, password?: string) => void;
   currentRoom?: GameRoom | null;
 }
@@ -33,6 +33,8 @@ export const RoomModal: React.FC<RoomModalProps> = ({
   const [isPrivate, setIsPrivate] = useState(false);
   const [password, setPassword] = useState('');
   const [maxPlayers, setMaxPlayers] = useState<number>(30);
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [createRoomError, setCreateRoomError] = useState<string | null>(null);
 
   // Private Join by code & password state
   const [privateCode, setPrivateCode] = useState('');
@@ -65,7 +67,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
           onClose={onClose}
         >
           <div role="status" className={`mb-2 rounded border px-2 py-1 text-[11px] font-bold ${cloudError ? 'bg-rose-100 border-red-400 text-red-800' : cloudReady ? 'bg-emerald-100 border-emerald-400 text-emerald-900' : 'bg-amber-50 border-amber-400 text-amber-900'}`}>
-            {cloudError || (cloudReady ? '☁ Đã kết nối danh sách phòng Firebase' : 'Đang kết nối danh sách phòng Firebase…')}
+            {cloudError ? 'Không tải được phòng. Vui lòng thử lại.' : cloudReady ? 'Danh sách phòng đang mở' : 'Đang tìm phòng…'}
           </div>
           {/* Tabs: Chỉ có Tạo phòng, Phòng Public, Phòng Private */}
           <div className="flex gap-1 mb-3 border-b border-[#808080] pb-1">
@@ -284,26 +286,42 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                 Phòng riêng sử dụng mã mời dài khó đoán. Không có mật khẩu vì việc kiểm tra mật khẩu trên trình duyệt không đủ an toàn.
               </p>}
 
+              {createRoomError && (
+                <div role="alert" className="p-2 rounded border border-red-500 bg-red-50 text-red-900 text-xs break-words">
+                  {'Không tạo được phòng. Kiểm tra kết nối và tài khoản, sau đó thử lại.'}
+                </div>
+              )}
               <div className="pt-2 flex justify-end gap-2 border-t border-stone-200">
-                <RetroButton size="md" onClick={() => setTab('public')}>
+                <RetroButton size="md" disabled={isCreatingRoom} onClick={() => { setCreateRoomError(null); setTab('public'); }}>
                   Hủy
                 </RetroButton>
                 <RetroButton
                   size="md"
                   variant="gold"
+                  disabled={isCreatingRoom}
                   onClick={() => {
-                    onCreateRoom({
-                      name: newRoomName.trim() || 'Chiếu Lô Tô Hội Xuân',
-                      isPrivate,
-                      password: undefined,
-                      callSpeed: 5,
-                      maxPlayers
-                    });
-                    onClose();
+                    void (async () => {
+                      setIsCreatingRoom(true);
+                      setCreateRoomError(null);
+                      try {
+                        await onCreateRoom({
+                          name: newRoomName.trim() || 'Chiếu Lô Tô Hội Xuân',
+                          isPrivate,
+                          password: undefined,
+                          callSpeed: 5,
+                          maxPlayers
+                        });
+                        onClose();
+                      } catch (error) {
+                        setCreateRoomError('Không tạo được phòng. Vui lòng thử lại.');
+                      } finally {
+                        setIsCreatingRoom(false);
+                      }
+                    })();
                   }}
                   icon={<Plus className="w-3.5 h-3.5" />}
                 >
-                  Mở Chiếu Lô Tô
+                  {isCreatingRoom ? 'Đang tạo phòng…' : 'Mở Chiếu Lô Tô'}
                 </RetroButton>
               </div>
             </div>

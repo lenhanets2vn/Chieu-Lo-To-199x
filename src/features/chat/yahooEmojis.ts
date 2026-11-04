@@ -41,4 +41,5 @@ export interface ChatMessage {
   timestamp: number;
   channel: 'room' | 'world' | 'system';
   isBuzz?: boolean;
+  isVipEmoji?: string;
 }

@@ -3,7 +3,7 @@
  */
 
 export type ThemeType = 'retro_default' | 'christmas' | 'halloween' | 'autumn' | 'summer' | 'winter';
-export type FrameType = 'frame_none' | 'frame_diamond' | 'frame_dragon_fire' | 'frame_neon_pink' | 'frame_winter_frost' | 'frame_pumpkin';
+export type FrameType = 'frame_none' | 'frame_diamond' | 'frame_dragon_fire' | 'frame_neon_pink' | 'frame_winter_frost' | 'frame_pumpkin' | 'frame_phoenix_legend';
 
 export interface UnlockableItem {
   id: string;

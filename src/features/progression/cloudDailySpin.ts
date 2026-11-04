@@ -5,7 +5,7 @@ import { localDayKey } from './dailySpin';
 /** Atomic cloud daily claim: competing tabs/devices cannot create the SAME daily document twice. */
 export async function reserveCloudDailySpin(profileId: string): Promise<number> {
   if (!auth.currentUser || auth.currentUser.uid !== profileId) {
-    throw new Error('Vui lòng đăng nhập Firebase trước khi quay.');
+    throw new Error('Vui lòng đăng nhập để quay.');
   }
   const startedAt = Date.now();
   const claim = doc(db, 'users', profileId, 'spinClaims', localDayKey(startedAt));

@@ -64,18 +64,16 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
   } else if (gameStatus === 'GAME_OVER') {
     stateText = '🎺 Ván chơi kết thúc';
   } else if (isSingingSong) {
-    stateText = audioLabel || '🎶 Gánh hát đang hò số bí mật... (Số sẽ mở 1 giây trước khi đổi bài)';
-  } else if (audioLabel) {
-    stateText = audioLabel;
+    stateText = '🎶 Gánh hát đang hò số...';
   }
 
   return (
     <section className="bg-[#190e09] border border-amber-700/70 rounded-xl p-3 sm:p-4 text-amber-100 shadow-lg" aria-label="Bảng lịch sử số lô tô và sóng nhạc">
       {/* Top Bar with Counters & Volume Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-900/60 pb-3">
-        <div className="flex items-center gap-2 text-amber-300">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#c06e2b] pb-3">
+        <div className="flex items-center gap-2 rounded-xl border-4 border-dotted border-[#ffda65] bg-[#995121] p-1.5 text-[#ffe19a]">
           <Radio className="h-5 w-5 text-yellow-400 animate-pulse" />
-          <h2 className="text-base sm:text-xl font-bold tracking-wide font-pixel uppercase">
+          <h2 className="rounded-lg bg-[#ffcc24] px-3 py-2 text-sm sm:text-lg font-black tracking-wide font-pixel uppercase text-[#b02025]">
             CÁC SỐ ĐÃ RA
           </h2>
           <span className="rounded bg-amber-900/80 px-2 py-0.5 text-[10px] font-mono text-amber-100 border border-amber-700">
@@ -135,7 +133,7 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
             {lastCalled === null ? '—' : String(lastCalled).padStart(2, '0')}
           </div>
           <span className="text-[10px] text-amber-300/80 font-medium">
-            {lastCalled === null ? 'Đang chờ hò số...' : 'Mở 1s trước khi hết câu'}
+            {lastCalled === null ? 'Đang chờ hò số...' : 'Số vừa được hò'}
           </span>
         </div>
 
@@ -153,31 +151,23 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
 
           <div
             ref={historyRef}
-            className="grid grid-cols-8 sm:grid-cols-12 lg:grid-cols-15 gap-1 sm:gap-1.5 content-start overflow-y-auto max-h-[116px] min-h-[48px] pr-1 p-1 bg-[#a91f1d] rounded-lg border border-[#f4cc7d]"
+            className="min-w-0 max-h-28 overflow-y-auto rounded-lg border border-[#f4cc7d] bg-[#a91f1d] px-3 py-2 text-[13px] sm:text-sm font-bold tabular-nums leading-7 text-[#fff1bd]"
             aria-live="polite"
-            aria-label="Các số đã được hò và hiện trên màn hình"
+            aria-label="Dãy số đã gọi theo thứ tự"
           >
             {calledHistory.length === 0 ? (
-              <span className="text-xs text-amber-300/60 italic p-2">
-                Chưa có số nào được gọi. Nhạc dạo và bài hò sẽ phát trước khi mở số đầu tiên đúng 1 giây trước khi đổi bài.
-              </span>
+              <span className="text-amber-100/80 italic font-normal">Chưa có số nào được gọi.</span>
             ) : (
-              calledHistory.map((number, index) => {
-                const isLatest = index === calledHistory.length - 1;
-                return (
-                  <span
-                    key={`${index}-${number}`}
-                    className={`aspect-square rounded-full border-2 flex items-center justify-center font-black text-[10px] sm:text-xs tabular-nums leading-none transition-colors ${
-                      isLatest
-                        ? 'bg-[#bee7ac] border-[#1b8f73] text-[#166955] ring-2 ring-yellow-400/60 font-black shadow-sm'
-                        : 'bg-[#fff1b4] text-[#b52231] border-[#e0a05b] hover:border-[#f7ca73]'
-                    }`}
-                    title={`Lượt gọi thứ ${index + 1}: số ${number}`}
-                  >
-                    {String(number).padStart(2, '0')}
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                {calledHistory.map((number, index) => (
+                  <span key={`${index}-${number}`} className="inline-flex items-center whitespace-nowrap" title={`Lượt ${index + 1}: số ${number}`}>
+                    {index > 0 && <span aria-hidden="true" className="mr-1.5 text-[#ffc774]">-</span>}
+                    <span className={index === calledHistory.length - 1 ? 'text-yellow-300' : ''}>
+                      {String(number).padStart(2, '0')}
+                    </span>
                   </span>
-                );
-              })
+                ))}
+              </div>
             )}
           </div>
 
@@ -189,11 +179,7 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
         <div className="flex items-center gap-2 text-xs text-amber-300 font-semibold">
           <Music2 className={`h-4 w-4 text-yellow-400 ${audioActive ? 'animate-pulse' : ''}`} />
           <span className="truncate">{stateText}</span>
-          {isSingingSong && (
-            <span className="ml-auto text-[11px] text-amber-400/80 font-mono hidden sm:inline">
-              ⚡ Số mở trước 1.0 giây
-            </span>
-          )}
+
         </div>
 
       </div>

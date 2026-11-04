@@ -40,7 +40,8 @@ export function subscribeToWorldChat(
           text: data.text || '',
           timestamp: typeof data.timestamp === 'number' ? data.timestamp : (data.timestamp?.toMillis?.() || Date.now()),
           channel: 'world',
-          isBuzz: data.isBuzz || false
+          isBuzz: data.isBuzz || false,
+          isVipEmoji: typeof data.isVipEmoji === 'string' ? data.isVipEmoji : undefined
         });
       });
       // Reverse so oldest is top, newest is bottom
@@ -87,7 +88,7 @@ export async function sendWorldChatMessage(
     return {
       allowed: false,
       filteredText: filter.filteredText,
-      reason: `Không gửi được tin nhắn thế giới: ${(error as {code?: string})?.code || 'lỗi kết nối'}. Kiểm tra Firestore Rules và database.`
+      reason: 'Không gửi được tin nhắn. Kiểm tra mạng và thử lại.'
     };
   }
 }
@@ -121,7 +122,8 @@ export function subscribeToRoomChat(
           text: data.text || '',
           timestamp: typeof data.timestamp === 'number' ? data.timestamp : (data.timestamp?.toMillis?.() || Date.now()),
           channel: 'room',
-          isBuzz: data.isBuzz || false
+          isBuzz: data.isBuzz || false,
+          isVipEmoji: typeof data.isVipEmoji === 'string' ? data.isVipEmoji : undefined
         });
       });
       onMessagesUpdate(msgs.reverse());
@@ -168,7 +170,7 @@ export async function sendRoomChatMessage(
     return {
       allowed: false,
       filteredText: filter.filteredText,
-      reason: `Không gửi được tin phòng: ${(error as {code?: string})?.code || 'lỗi kết nối'}. Kiểm tra quyền thành viên.`
+      reason: 'Không gửi được tin nhắn trong phòng. Vui lòng thử lại.'
     };
   }
 }

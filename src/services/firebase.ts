@@ -20,7 +20,7 @@ if (usingEnv) {
     .filter(([, value]) => !value)
     .map(([name]) => name);
   if (missing.length) {
-    throw new Error(`Thiếu biến Firebase trên Hosting: ${missing.join(', ')}. Hãy nhập đủ bộ cấu hình.`);
+    throw new Error('Ứng dụng chưa được cấu hình kết nối. Vui lòng liên hệ quản trị viên.');
   }
 }
 

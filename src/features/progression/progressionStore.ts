@@ -239,6 +239,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     description: 'Nắp keng sắt viền răng cưa huyền thoại của chai nước ngọt xá xị Chương Dương.',
     requiredLevel: 3,
     previewIcon: '⭐',
+    costCoins: 12000,
     unlocked: false
   },
   {
@@ -248,6 +249,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     description: 'Viên đá cuội biển láng mịn nhặt ở bãi biển Vũng Tàu năm 1996.',
     requiredLevel: 5,
     previewIcon: '💎',
+    costCoins: 24000,
     unlocked: false
   },
   {
@@ -257,6 +259,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     description: 'Cúc áo bốn lỗ mẹ đơm bằng chỉ ngũ sắc bền bỉ theo năm tháng.',
     requiredLevel: 8,
     previewIcon: '🔘',
+    costCoins: 42000,
     unlocked: false
   },
   {
@@ -266,6 +269,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     description: 'Con dấu mực chu sa của Trưởng Ban Giám Khảo đóng cộp chữ KINH!',
     requiredLevel: 10,
     previewIcon: '💮',
+    costCoins: 80000,
     unlocked: false
   },
 
@@ -286,6 +290,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     description: 'Mẫu giấy hồng phấn đem lại vận son đỏ cho người chơi.',
     requiredLevel: 4,
     previewIcon: '🌸',
+    costCoins: 20000,
     unlocked: false
   },
   {
@@ -295,6 +300,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     description: 'Họa tiết đá ngọc bích sang trọng thời kỳ mở cửa.',
     requiredLevel: 6,
     previewIcon: '❇️',
+    costCoins: 35000,
     unlocked: false
   },
   {
@@ -304,6 +310,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     description: 'Giấy in báo hoài niệm với phông chữ cơ học thời bao cấp.',
     requiredLevel: 8,
     previewIcon: '📰',
+    costCoins: 60000,
     unlocked: false
   },
 
@@ -363,7 +370,7 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     unlocked: false
   },
   { id:'ticket_royal_rare', name:'Vé Hoàng Gia Hiếm', type:'ticket_skin', description:'Vật phẩm sưu tầm quý hiếm dành cho người chơi lâu năm.', requiredLevel:12, previewIcon:'🎟️', costCoins:250000, unlocked:false },
-  { id:'frame_phoenix_legend', name:'Khung Phượng Hoàng Huyền Thoại', type:'avatar_frame', description:'Khung danh giá dành cho người chơi kỳ cựu.', requiredLevel:20, previewIcon:'🦅', costCoins:1000000, unlocked:false },
+  { id:'frame_phoenix_legend', name:'Khung Phượng Hoàng Huyền Thoại', type:'avatar_frame', description:'Khung danh giá dành cho người chơi kỳ cựu.', requiredLevel:20, previewIcon:'🦅', frameKey:'frame_phoenix_legend', costCoins:1000000, unlocked:false },
   { id:'title_carnival_king', name:'Vua Hội Chợ', type:'yahoo_title', description:'Danh hiệu sưu tầm tối thượng.', requiredLevel:30, previewIcon:'👑', costCoins:5000000, unlocked:false },
 ];
 
@@ -479,38 +486,21 @@ export function purchaseItem(profile: PlayerProfile, item: UnlockableItem): { su
   updated.coins -= cost;
   updated.unlockedItemIds.push(item.id);
 
-  // Auto equip if it's a theme or frame
+  // New purchases are immediately equipped when they have a visual in-game effect.
   if (item.type === 'web_theme' && item.themeKey) {
     updated.activeThemeId = item.themeKey;
   } else if (item.type === 'avatar_frame' && item.frameKey) {
     updated.activeFrameId = item.frameKey;
+  } else if (item.type === 'marker') {
+    updated.activeMarkerId = item.id;
+  } else if (item.type === 'ticket_skin') {
+    updated.activeTicketSkinId = item.id;
+  } else if (item.type === 'yahoo_title') {
+    updated.yahooTitle = item.name;
   }
 
   saveProfile(updated);
   return { success: true, updatedProfile: updated, message: `Mua thành công ${item.name}!` };
-}
-
-export function exportSyncCode(profile: PlayerProfile): string {
-  try {
-    const jsonStr = JSON.stringify(profile);
-    return btoa(encodeURIComponent(jsonStr));
-  } catch {
-    return '';
-  }
-}
-
-export function importSyncCode(code: string): { success: boolean; profile?: PlayerProfile; error?: string } {
-  try {
-    const jsonStr = decodeURIComponent(atob(code.trim()));
-    const parsed = JSON.parse(jsonStr) as PlayerProfile;
-    if (parsed && parsed.id && typeof parsed.level === 'number') {
-      saveProfile(parsed);
-      return { success: true, profile: parsed };
-    }
-    return { success: false, error: 'Mã đồng bộ không hợp lệ!' };
-  } catch {
-    return { success: false, error: 'Lỗi giải mã! Vui lòng kiểm tra chuỗi mã sao lưu.' };
-  }
 }
 
 export function getWeeklyLeaderboard(userProfile: PlayerProfile): WeeklyLeaderboardEntry[] {

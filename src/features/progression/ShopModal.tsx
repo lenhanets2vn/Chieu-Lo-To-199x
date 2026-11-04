@@ -1,10 +1,9 @@
-import { auth } from '../../services/firebase';
 import React, { useState } from 'react';
 import { PlayerProfile, UnlockableItem } from './progressionTypes';
 import { UNLOCKABLE_CATALOG, getExpNeededForLevel, purchaseItem } from './progressionStore';
 import { RetroWindow } from '../../components/ui/RetroWindow';
 import { RetroButton } from '../../components/ui/RetroButton';
-import { Coins, Award, Check, Lock, Smartphone, RefreshCw, Copy, CheckCircle, Sparkles } from 'lucide-react';
+import { Coins, Check, Lock, Sparkles } from 'lucide-react';
 
 interface ShopModalProps {
   isOpen: boolean;
@@ -21,7 +20,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
   onUpdateProfile,
   onTriggerVipEffect
 }) => {
-  const [activeTab, setActiveTab] = useState<'themes' | 'frames' | 'vip_emojis' | 'markers' | 'tickets' | 'titles' | 'sync'>('themes');
+  const [activeTab, setActiveTab] = useState<'themes' | 'frames' | 'vip_emojis' | 'markers' | 'tickets' | 'titles'>('themes');
   const [buyToast, setBuyToast] = useState<string | null>(null);
 
   if (!isOpen) return null;
@@ -73,7 +72,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
       <div className="w-full max-w-xl">
         <RetroWindow
-          title="TẠP HÓA HỘI CHỢ: THEME NỀN, KHUNG AVATAR & VẬT PHẨM 199x"
+          title="TẠP HÓA HỘI CHỢ"
           icon="🏪"
           onClose={onClose}
         >
@@ -165,18 +164,11 @@ export const ShopModal: React.FC<ShopModalProps> = ({
             >
               Danh Hiệu
             </button>
-            <button
-              onClick={() => setActiveTab('sync')}
-              className={`px-2.5 py-1 text-xs font-bold cursor-pointer ${
-                activeTab === 'sync' ? 'win98-btn bg-[#000080] text-white' : 'win98-btn'
-              }`}
-            >
-              Đồng Bộ
-            </button>
+
           </div>
 
           {/* ITEM LIST */}
-          {activeTab !== 'sync' ? (
+          {(
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-64 overflow-y-auto p-1 win98-box-inset bg-white">
               {items.map((item) => {
                 const isOwned = 
@@ -230,7 +222,7 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                               }}
                               className="win98-btn px-2 py-0.5 text-[10px] font-bold cursor-pointer"
                             >
-                              Thử Hiệu Ứng
+                              Xem Hiệu Ứng
                             </button>
                           </div>
                         ) : (
@@ -285,25 +277,8 @@ export const ShopModal: React.FC<ShopModalProps> = ({
                 );
               })}
             </div>
-          ) : (
-            <div className="space-y-3 bg-white p-4 border border-[#808080] win98-box-inset text-stone-800">
-              <div className="flex items-start gap-2">
-                <Smartphone className="w-5 h-5 text-blue-800 shrink-0 mt-0.5" />
-                <div>
-                  <h4 className="font-bold text-sm text-blue-900">Tiến trình và tài khoản Cloud</h4>
-                  <p className="text-xs mt-1 leading-relaxed">
-                    Tiến trình được gắn với tài khoản Firebase của bạn. Đăng nhập cùng tài khoản trên thiết bị khác để tải hồ sơ đã lưu.
-                  </p>
-                  <p className="text-xs mt-2 text-amber-900">
-                    Tránh đăng xuất khi vừa nhận thưởng hoặc mua vật phẩm vì đồng bộ có thể cần kết nối mạng.
-                  </p>
-                  <p className="text-xs mt-2 font-bold text-emerald-800">
-                    {auth.currentUser ? 'Đã kết nối tài khoản Firebase' : 'Chưa kết nối Firebase — mở mục Đăng nhập để tiếp tục'}
-                  </p>
-                </div>
-              </div>
-            </div>
           )}
+
         </RetroWindow>
       </div>
     </div>

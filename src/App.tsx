@@ -103,6 +103,27 @@ export default function App() {
   const [chatConnection, setChatConnection] = useState<{world: 'connecting'|'online'|'offline'|'error'; room: 'connecting'|'online'|'offline'|'error'}>({ world:'connecting', room:'connecting' });
   const [chatConnectionError, setChatConnectionError] = useState<{world:string|null;room:string|null}>({ world:null, room:null });
   const handledInviteRef = useRef<string | null>(null);
+  // Each rendered VIP animation comes from one newly received message.
+  // The first chat snapshot is history, not a new event.
+  const seenVipMessagesRef = useRef<Set<string>>(new Set());
+  const hasSeenChatSnapshotRef = useRef<{world: boolean; roomId: string | null}>({world:false, roomId:null});
+  const consumeVipChatEffects = useCallback((messages: ChatMessage[], channel: 'world' | 'room', roomId?: string) => {
+    const scope = channel === 'world' ? 'world' : (roomId || '');
+    const first = channel === 'world' ? !hasSeenChatSnapshotRef.current.world : hasSeenChatSnapshotRef.current.roomId !== scope;
+    const seen = seenVipMessagesRef.current;
+    const permitted = new Set(['fireworks','bomb','hearts','dragon','piggy_coins','crown','guitar_notes']);
+    for (const msg of messages) {
+      const key = `${scope}:${msg.id}`;
+      if (!seen.has(key) && !first && msg.senderId !== auth.currentUser?.uid &&
+          msg.isVipEmoji && permitted.has(msg.isVipEmoji) && Date.now() - msg.timestamp < 12000) {
+        setActiveVipEffect(msg.isVipEmoji);
+      }
+      seen.add(key);
+    }
+    if (channel === 'world') hasSeenChatSnapshotRef.current.world = true;
+    else hasSeenChatSnapshotRef.current.roomId = scope;
+    if (seen.size > 600) seenVipMessagesRef.current = new Set(Array.from(seen).slice(-300));
+  }, []);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
 
   // Game Settings: Auto-mark is TRUE by default, Ticket Count is strictly 1!
@@ -369,8 +390,8 @@ export default function App() {
         setIsAuthOpen(false);
       } catch (error) {
         if (mounted) {
-          console.warn('Lỗi tải tiến trình cloud:', error);
-          setAuthIssue(`Không thể tải hồ sơ Firebase (${(error as {code?:string})?.code || 'lỗi kết nối'}). Hãy kiểm tra quyền Firestore và thử lại.`);
+          console.warn('Không tải được tài khoản:', (error as {code?: string})?.code || 'unknown');
+          setAuthIssue('Không tải được tài khoản. Kiểm tra mạng và thử lại.');
           setIsAuthOpen(true);
         }
       } finally {
@@ -379,7 +400,7 @@ export default function App() {
     }, error => {
       if (mounted) {
         setAuthResolved(true);
-        setAuthIssue(`Lỗi xác thực Firebase: ${error.code}`);
+        setAuthIssue('Đăng nhập tạm thời không khả dụng. Vui lòng thử lại.');
         setIsAuthOpen(true);
       }
     });
@@ -399,7 +420,7 @@ export default function App() {
     setRoomCloudReady(false);
     setRoomCloudError(null);
     const unsubPublicRooms = subscribeToPublicRooms((rooms) => setPublicRooms(rooms), err => {
-      setRoomCloudError(`Không tải được phòng online: ${err.code}. Kiểm tra Firestore Rules và ID database.`);
+      setRoomCloudError('Không tải được danh sách phòng. Vui lòng thử lại.');
       setRoomCloudReady(false);
     }, fromServer => {
       setRoomCloudReady(fromServer);
@@ -415,19 +436,20 @@ export default function App() {
     setChatConnection(previous => ({...previous, world:'connecting'}));
     setChatConnectionError(previous => ({...previous, world:null}));
     const unsubWorld = subscribeToWorldChat((worldMsgs) => {
+      consumeVipChatEffects(worldMsgs, 'world');
       setMessages(prev => {
         const nonWorld = prev.filter(m => m.channel !== 'world');
         return [...nonWorld, ...worldMsgs].sort((a, b) => a.timestamp - b.timestamp);
       });
     }, error => {
       setChatConnection(previous => ({...previous, world:'error'}));
-      setChatConnectionError(previous => ({...previous, world:`Kênh thế giới bị từ chối (${error.code}). Kiểm tra đúng Firestore database và Security Rules đã deploy.`}));
+      setChatConnectionError(previous => ({...previous, world:'Không tải được tin nhắn. Vui lòng thử lại.'}));
     }, fromServer => {
       setChatConnection(previous => ({...previous, world:fromServer?'online':'offline'}));
       if (fromServer) setChatConnectionError(previous => ({...previous, world:null}));
     });
     return () => unsubWorld();
-  }, [currentView, matchRightTab, activeChatChannel, isWorldChatOpen, readyUserId]);
+  }, [currentView, matchRightTab, activeChatChannel, isWorldChatOpen, readyUserId, consumeVipChatEffects]);
 
   // Gameplay listeners are stable for the lifetime of one room: switching chat tabs
   // MUST NOT detach and re-query room/members/state (billable initial reads).
@@ -472,16 +494,17 @@ export default function App() {
     setChatConnection(previous => ({...previous, room:'connecting'}));
     setChatConnectionError(previous => ({...previous, room:null}));
     return subscribeToRoomChat(currentRoom.id, roomMsgs => {
+      consumeVipChatEffects(roomMsgs, 'room', currentRoom.id);
       setMessages(prev => [...prev.filter(m => m.channel !== 'room'), ...roomMsgs]
         .sort((a, b) => a.timestamp - b.timestamp));
     }, error => {
       setChatConnection(previous => ({...previous, room:'error'}));
-      setChatConnectionError(previous => ({...previous, room:`Chat phòng lỗi (${error.code}). Kiểm tra thành viên phòng, Firestore Rules và database.`}));
+      setChatConnectionError(previous => ({...previous, room:'Không tải được tin nhắn trong phòng.'}));
     }, fromServer => {
       setChatConnection(previous => ({...previous, room:fromServer?'online':'offline'}));
       if (fromServer) setChatConnectionError(previous => ({...previous, room:null}));
     });
-  }, [readyUserId, currentRoom?.id, currentView, matchRightTab, activeChatChannel]);
+  }, [readyUserId, currentRoom?.id, currentView, matchRightTab, activeChatChannel, consumeVipChatEffects]);
 
   useEffect(() => {
     if (!currentRoom?.id || currentView !== 'GAME_MATCH') return;
@@ -585,7 +608,7 @@ export default function App() {
   const handleSendMessage = async (text: string, channel: 'room' | 'world', isVipEmoji?: string) => {
     const sender = { id: profile.id, name: profile.displayName, characterId: profile.characterId };
     if (!readyUserId || readyUserId !== auth.currentUser?.uid || auth.currentUser?.isAnonymous) {
-      return { allowed:false, filteredText:'', reason:'Cần đăng nhập tài khoản Firebase để gửi tin.' };
+      return { allowed:false, filteredText:'', reason:'Hãy đăng nhập để gửi tin nhắn.' };
     }
     if (channel === 'world') return sendWorldChatMessage(sender, text, isVipEmoji);
     if (currentRoom?.id) return sendRoomChatMessage(currentRoom.id, sender, text, isVipEmoji);
@@ -1273,7 +1296,8 @@ export default function App() {
       setSettings(prev => ({ ...prev, mode: 'online_friend', callIntervalSeconds: room.callIntervalSeconds }));
       startNewGame('online_friend', room);
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Không tạo được phòng trên Firebase.');
+      // The room dialog remains open and displays the precise failure stage.
+      throw error instanceof Error ? error : new Error('Không tạo được phòng. Vui lòng thử lại.');
     }
   };
 
@@ -1381,6 +1405,8 @@ export default function App() {
         return 'ring-4 ring-sky-300 shadow-[0_0_14px_#bae6fd] border-2 border-white';
       case 'frame_pumpkin':
         return 'ring-4 ring-amber-500 shadow-[0_0_14px_#f59e0b] border-2 border-orange-400';
+      case 'frame_phoenix_legend':
+        return 'ring-4 ring-orange-400 border-4 border-red-700 shadow-[0_0_0_3px_#fcd34d]';
       default:
         return 'border-2 border-amber-500 shadow';
     }
@@ -1395,7 +1421,7 @@ export default function App() {
       <div className="min-h-screen bg-[#1c0f09] text-amber-100 flex items-center justify-center p-4">
         <div className="w-full max-w-lg space-y-3 text-center">
           <h1 className="text-2xl sm:text-3xl font-black text-yellow-300">🏮 LÔ TÔ HỘI CHỢ 199x</h1>
-          {!authResolved && <p role="status" className="text-amber-200">Đang kiểm tra phiên đăng nhập Firebase…</p>}
+          {!authResolved && <p role="status" className="text-amber-200">Đang kiểm tra tài khoản…</p>}
           {authIssue && <p role="alert" className="bg-red-950 border border-red-500 p-3 rounded-lg text-red-100 text-sm">{authIssue}</p>}
           {authResolved && <AuthModal isOpen={true} required onClose={() => {}} onAuthSuccess={newProfile => {
             cancelPendingProfileSync(); setProfile(newProfile); saveProfile(newProfile);
@@ -1449,7 +1475,6 @@ export default function App() {
         </nav>
 
         <div className="flex items-center gap-2 shrink-0">
-          <span className="hidden sm:inline text-[10px] rounded border border-emerald-600/50 bg-emerald-950/60 px-2 py-1 text-emerald-200 font-bold" title="Đã xác thực tài khoản Firebase; chat thông báo Cloud riêng trong từng kênh">☁ Đã đăng nhập</span>
           <RetroButton
             size="sm"
             variant="gold"
@@ -1625,6 +1650,8 @@ export default function App() {
                     ticket={ticket}
                     calledNumbers={calledNumbers}
                     activeMarkerIcon={activeMarker.previewIcon}
+                    activeMarkerName={activeMarker.name}
+                    activeTicketSkinId={profile.activeTicketSkinId}
                     highlightNumber={activeHighlightNumber}
                   />
                 ))}

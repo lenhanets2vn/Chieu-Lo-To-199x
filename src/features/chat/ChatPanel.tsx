@@ -61,7 +61,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     const text = inputText.trim();
     if (!text || sending) return;
     if (connectionState === 'error' || connectionState === 'offline') {
-      setFilterWarning(connectionError || 'Chat chưa kết nối Cloud, chưa thể gửi tin.');
+      setFilterWarning('Chưa thể gửi tin nhắn. Hãy kiểm tra mạng rồi thử lại.');
       return;
     }
     setSending(true);
@@ -111,7 +111,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <span className="text-yellow-300 font-pixel text-sm">💬</span>
           <span className="tracking-tight font-pixel text-sm">HỘP TRÒ CHUYỆN HỘI CHIẾU</span>
           <span role="status" className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${connectionState === 'online' ? 'bg-emerald-700' : connectionState === 'error' ? 'bg-red-700' : 'bg-amber-700'}`}>
-            {connectionState === 'online' ? '● Cloud' : connectionState === 'error' ? '✕ Mất kết nối' : connectionState === 'offline' ? 'Ngoại tuyến' : 'Đang kết nối…'}
+            {connectionState === 'error' ? 'Không thể gửi tin' : connectionState === 'offline' ? 'Mất mạng' : connectionState === 'connecting' ? 'Đang vào chat…' : 'Trò chuyện'}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -126,7 +126,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       </div>
 
-      {connectionError && <p role="alert" className="bg-red-50 border border-red-300 px-2 py-1 text-red-800 text-[11px] font-semibold">{connectionError}</p>}
+      {connectionError && <p role="alert" className="bg-red-50 border border-red-300 px-2 py-1 text-red-800 text-[11px] font-semibold">Không thể tải tin nhắn. Hãy thử lại sau.</p>}
       {/* Tabs: Kênh Chiếu Hội vs Kênh Giao Lưu */}
       <div className="flex items-center gap-1 px-1 pt-1 bg-[#d4d0c8] border-b border-[#808080]">
         {isInsideRoom && <button
@@ -167,7 +167,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* Voice is not advertised until WebRTC signaling and TURN are deployed. */}
       <div className="bg-[#e4e4e4] px-2 py-1 border-b border-[#a0a0a0] text-[11px] text-stone-600">
-        <MicOff className="w-3.5 h-3.5 inline mr-1" /> Bộ đàm chưa khả dụng trên Cloud. Chat chữ vẫn hoạt động.
+        <MicOff className="w-3.5 h-3.5 inline mr-1" /> Bộ đàm đang tạm khóa. Bạn vẫn có thể trò chuyện bằng tin nhắn.
       </div>
 
       {/* Message history list */}
@@ -271,7 +271,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 { symbol: '💖', name: 'Bão Tim Bay', effect: 'hearts', itemId: 'vip_heart_rain' },
                 { symbol: '🐉', name: 'Hỏa Long Xuất Thế', effect: 'dragon', itemId: 'vip_dragon' },
                 { symbol: '🐷', name: 'Heo Đất Tiền Vàng', effect: 'piggy_coins', itemId: 'vip_piggy' },
-                { symbol: '👑', name: 'Vương Miện Hoàng Gia', effect: 'crown', itemId: 'vip_crown' }
+                { symbol: '👑', name: 'Vương Miện Hoàng Gia', effect: 'crown', itemId: 'vip_crown' },
+                { symbol: '🎸', name: 'Đàn Kìm Vọng Cổ', effect: 'guitar_notes', itemId: 'vip_guitar' }
               ].map((vip) => (
                 <button
                   key={vip.effect}

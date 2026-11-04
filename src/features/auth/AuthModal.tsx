@@ -80,16 +80,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         }, 600);
       }
     } catch (err: any) {
-      console.error('Firebase Auth error:', err);
+      console.warn('Lỗi đăng nhập:', err?.code || 'unknown');
       const errCode = err?.code || '';
       if (errCode === 'auth/email-already-in-use') {
         setErrorMsg('Tên Đăng Nhập này đã có người đăng ký! Vui lòng chọn tên khác hoặc chuyển sang Đăng Nhập.');
       } else if (errCode === 'auth/invalid-credential' || errCode === 'auth/user-not-found' || errCode === 'auth/wrong-password') {
         setErrorMsg('Tên đăng nhập hoặc mật khẩu không chính xác!');
       } else if (errCode === 'auth/network-request-failed') {
-        setErrorMsg('Không kết nối được Firebase. Kiểm tra mạng rồi thử lại; chưa đăng nhập nên không thể chơi.');
+        setErrorMsg('Không thể kết nối. Kiểm tra mạng rồi thử lại.');
       } else {
-        setErrorMsg(err?.message || 'Có lỗi khi kết nối máy chủ xác thực.');
+        setErrorMsg('Không thể đăng nhập lúc này. Vui lòng thử lại sau.');
       }
     } finally {
       setIsLoading(false);
@@ -142,7 +142,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 className="w-full border border-[#808080] px-2.5 py-1.5 text-xs text-black font-mono font-bold outline-none bg-stone-50"
               />
               <span className="text-[10px] text-stone-500">
-                * Dùng để đăng nhập và đồng bộ tiến trình (vàng, cấp, vé) lên Cloud
+                * Dùng để lưu cấp độ, xu và vật phẩm khi đăng nhập trên thiết bị khác.
               </span>
             </div>
 
@@ -211,7 +211,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             <div className="pt-2 flex justify-between items-center gap-2">
               <span className="text-[11px] text-stone-600 font-semibold">
-                {required ? 'Cần đăng nhập hoặc đăng ký để chơi và lưu tiến trình.' : 'Tài khoản của bạn được lưu trên Firebase.'}
+                {required ? 'Cần đăng nhập hoặc đăng ký để chơi và lưu tiến trình.' : 'Dùng một tài khoản để tiếp tục chơi trên các thiết bị.'}
               </span>
               <RetroButton
                 type="submit"
