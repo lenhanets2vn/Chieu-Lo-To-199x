@@ -1,0 +1,25 @@
+// RTDB fixed-slot rule contract (not a Firebase Emulator integration test).
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const rulesText = fs.readFileSync('database.rules.json', 'utf8');
+const rules = JSON.parse(rulesText).rules;
+assert.equal(rulesText.includes('numChildren'), false, 'Unsupported function remains');
+assert.equal(rules['.read'], false);
+assert.equal(rules['.write'], false);
+const slot = rules.admission.active.$slotId;
+const claim = rules.admission.claims.$uid;
+assert.match(slot['.write'], /matches\(\/\^\(/);
+assert.ok(slot['.write'].includes('!data.exists() && newData.exists()'));
+assert.ok(slot['.write'].includes("root.child('admission/claims')"));
+assert.equal(slot.$other['.validate'], false);
+assert.equal(claim['.read'], 'auth != null && auth.uid === $uid');
+const keyPattern = /^([0-9]|[1-8][0-9])$/;
+for (let i = 0; i <= 120; i++) assert.equal(keyPattern.test(String(i)), i < 90, `slot ${i}`);
+for (const key of ['a', 'uid-1', '090', '-1', '0xyz', '7_fff', '']) assert.equal(keyPattern.test(key), false);
+const src = fs.readFileSync('src/features/capacity/onlineAdmission.ts', 'utf8');
+assert(src.includes('await onDisconnect(candidate).remove()'));
+assert(src.includes('await set(candidate, { uid, connectedAt: rtServerTimestamp() })'));
+assert(src.includes('await onDisconnect(candidate).cancel()'));
+assert(src.includes('await set(claimRef, index)'));
+console.log('PASS: RTDB 90 fixed slots + claims (STATIC, no emulator)');

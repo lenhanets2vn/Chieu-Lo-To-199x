@@ -42,3 +42,7 @@ node tools/test-online-realtime.cjs
 Các kiểm tra mô phỏng offline không chứng minh được tính đúng đắn của Firebase Rules trong môi trường triển khai hoặc việc phát âm thanh đồng thời trên trình duyệt. Người dùng có thể cần bấm **Bật nhạc phòng** do hạn chế autoplay. Đồng bộ âm thanh là gần realtime, không phải đồng bộ từng mẫu âm thanh. Chuyển HOST tự động khi tab đóng đột ngột, sự hiện diện tin cậy phía backend, tiền xu/phần thưởng chống gian lận và kiểm thử tải 100 người **chưa hoàn tất**.
 
 Không đưa private key, service account JSON, token quản trị vào `VITE_*` hoặc source frontend.
+
+## Vá lỗi RTDB Rules numChildren (05/11/2026)
+
+Phiên bản này yêu cầu bộ Rules cập nhật **cùng phiên bản frontend**. Xem `HUONG_DAN_SUA_LOI_NUMCHILDREN.md`. Chạy `DEPLOY_CHI_REALTIME_DATABASE_RULES_WINDOWS.cmd` trước, sau đó redeploy frontend. Không dùng Rules cũ `numChildren()`.

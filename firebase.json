@@ -25,5 +25,8 @@
       "source": "functions",
       "codebase": "chat-cleanup"
     }
-  ]
+  ],
+  "database": {
+    "rules": "database.rules.json"
+  }
 }

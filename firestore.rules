@@ -225,6 +225,21 @@ service cloud.firestore {
         allow update, delete: if false;
       }
     }
+    // Lightweight FIFO queue for Spark admission: visitors wait on Firestore
+    // without consuming RTDB persistent connections. Lease refresh only while waiting.
+    match /online_waiting/{uid} {
+      allow get: if me(uid);
+      allow list: if signedIn() && request.query.limit <= 50;
+      allow create: if me(uid)
+        && request.resource.data.keys().hasOnly(['joinedAt','lastSeen'])
+        && request.resource.data.joinedAt == request.time
+        && request.resource.data.lastSeen == request.time;
+      allow update: if me(uid)
+        && request.resource.data.keys().hasOnly(['joinedAt','lastSeen'])
+        && request.resource.data.joinedAt == resource.data.joinedAt
+        && request.resource.data.lastSeen == request.time;
+      allow delete: if me(uid);
+    }
     match /chat_sessions/{uid} {
       allow get: if me(uid);
       allow list: if false;

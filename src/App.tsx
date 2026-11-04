@@ -63,6 +63,8 @@ import {
   flushPendingProfileSync, logoutPlayer
 } from './features/auth/firebaseAuthService';
 import { auth, db } from './services/firebase';
+import { realtimeConfigured } from './services/realtime';
+import { startOnlineAdmission, type AdmissionState } from './features/capacity/onlineAdmission';
 import { doc, getDoc, getDocFromServer, setDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { createStarterProfile } from './features/progression/progressionStore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
@@ -105,6 +107,7 @@ export default function App() {
   const displayNameRef = useRef(profile.displayName);
   displayNameRef.current = profile.displayName;
   const [readyUserId, setReadyUserId] = useState<string | null>(null);
+  const [onlineAdmission, setOnlineAdmission] = useState<AdmissionState>({status:'connecting'});
   const [authResolved, setAuthResolved] = useState(false);
   const [authIssue, setAuthIssue] = useState<string | null>(null);
   const [chatConnection, setChatConnection] = useState<{world: 'connecting'|'online'|'offline'|'error'; room: 'connecting'|'online'|'offline'|'error'}>({ world:'connecting', room:'connecting' });
@@ -416,6 +419,14 @@ export default function App() {
     });
     return () => { mounted = false; unsubscribe(); };
   }, []);
+
+  // A waiting visitor uses Firestore queue ONLY, without holding an RTDB socket.
+  // An active visitor has one RTDB presence slot and receives onDisconnect cleanup.
+  useEffect(() => {
+    if (!realtimeConfigured || !readyUserId) return;
+    setOnlineAdmission({status:'connecting'});
+    return startOnlineAdmission(readyUserId, setOnlineAdmission);
+  }, [readyUserId]);
 
   // Flush noncritical profile writes as the player hides the browser tab.
   useEffect(() => {
@@ -1515,6 +1526,8 @@ export default function App() {
 
     const { updatedProfile, leveledUp } = addExpAndRewards(profile, baseExp, baseCoins, isUserWinner);
     handleUpdateProfile(updatedProfile);
+    // One durable profile sync at match settlement. No per-XP click writes.
+    void flushPendingProfileSync();
 
     saveMatchRecord({
       id: `match-${Date.now()}`,
@@ -1745,6 +1758,7 @@ export default function App() {
   };
 
   const currentTheme = getThemeConfig(profile.activeThemeId);
+  const needsOnlineAdmission = realtimeConfigured && readyUserId && onlineAdmission.status !== 'active';
 
   // The entire gameplay UI remains inaccessible until Firebase Auth AND a
   // matching Firestore user profile are ready (no anonymous/guest mode).
@@ -1760,6 +1774,27 @@ export default function App() {
             setReadyUserId(newProfile.id); setAuthIssue(null);
           }} currentProfile={profile} />}
         </div>
+      </div>
+    );
+  }
+
+  if (needsOnlineAdmission) {
+    return (
+      <div className="min-h-screen bg-[#1c0f09] text-yellow-100 flex items-center justify-center px-5">
+        <section className="max-w-md w-full bg-[#48220c] border-4 border-yellow-600 rounded-2xl p-7 text-center space-y-4">
+          <h1 className="text-2xl font-black text-yellow-300">🎪 HÀNG CHỜ HỘI CHỢ</h1>
+          <p role="status" className="text-lg font-bold">
+            {onlineAdmission.status === 'connecting' ? 'Đang kiểm tra chỗ trống…' :
+             onlineAdmission.status === 'error' ? 'Chưa kết nối được' :
+             `Đang chờ lượt vào chơi${onlineAdmission.position ? ` · Vị trí ${onlineAdmission.position}` : ''}`}
+          </p>
+          <p className="text-amber-200 text-sm">{onlineAdmission.message || 'Khi có chỗ trống, hệ thống sẽ tự động đưa bạn vào.'}</p>
+          <p className="text-amber-300 text-xs">Hàng chờ không giữ kết nối trò chơi, giúp tiết kiệm tài nguyên.</p>
+          {onlineAdmission.status === 'error' && (
+            <button type="button" className="px-4 py-2 bg-yellow-500 text-amber-950 rounded-lg font-bold" onClick={() => window.location.reload()}>Thử lại</button>
+          )}
+          <button type="button" className="px-4 py-2 bg-amber-700 rounded-lg font-bold" onClick={() => { void logoutPlayer(); }}>Đăng xuất</button>
+        </section>
       </div>
     );
   }
