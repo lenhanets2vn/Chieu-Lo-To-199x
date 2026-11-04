@@ -1,3 +1,5 @@
+> **Cập nhật online mới nhất:** Xem `BAO_CAO_REALTIME_TAI_KHOAN_PHONG.md`. Đã tách màn hình Hồ sơ/Đổi mật khẩu, sửa tạo/vào phòng Public & Private bằng giao dịch đồng bộ memberCount, và giới hạn listener khi tab ẩn. **Phải triển khai `firestore.rules` cùng frontend.** Các phần mô tả cũ dưới đây là tài liệu lịch sử và không phản ánh mọi quy tắc của bản này.
+
 > **Triển khai Vercel / Render:** xem `DEPLOY_RENDER_VERCEL.md` và `DEPLOY_ENV_VALUES.txt`.
 
 # LÔ TÔ HỘI CHỢ 199x — AI STUDIO TYPESCRIPT V8.1

@@ -11,7 +11,7 @@ interface RoomModalProps {
   cloudError?: string | null;
   cloudReady?: boolean;
   onCreateRoom: (roomData: { name: string; isPrivate: boolean; password?: string; callSpeed: number; maxPlayers: number }) => Promise<void>;
-  onJoinRoom: (code: string, password?: string) => void;
+  onJoinRoom: (code: string, password?: string) => Promise<void>;
   currentRoom?: GameRoom | null;
 }
 
@@ -35,6 +35,8 @@ export const RoomModal: React.FC<RoomModalProps> = ({
   const [maxPlayers, setMaxPlayers] = useState<number>(30);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [createRoomError, setCreateRoomError] = useState<string | null>(null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joiningCode, setJoiningCode] = useState<string | null>(null);
 
   // Private Join by code & password state
   const [privateCode, setPrivateCode] = useState('');
@@ -51,11 +53,23 @@ export const RoomModal: React.FC<RoomModalProps> = ({
     setTimeout(() => setCopiedLink(false), 2500);
   };
 
+  const tryJoin = async (code: string) => {
+    if (joiningCode) return;
+    setJoinError(null);
+    setJoiningCode(code);
+    try {
+      await onJoinRoom(code);
+      onClose();
+    } catch (error) {
+      setJoinError(error instanceof Error ? error.message : 'Không thể vào phòng. Vui lòng thử lại.');
+    } finally {
+      setJoiningCode(null);
+    }
+  };
+
   const handleJoinPrivate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!privateCode.trim()) return;
-    onJoinRoom(privateCode.trim());
-    onClose();
+    if (privateCode.trim()) void tryJoin(privateCode.trim());
   };
 
   return (
@@ -67,8 +81,9 @@ export const RoomModal: React.FC<RoomModalProps> = ({
           onClose={onClose}
         >
           <div role="status" className={`mb-2 rounded border px-2 py-1 text-[11px] font-bold ${cloudError ? 'bg-rose-100 border-red-400 text-red-800' : cloudReady ? 'bg-emerald-100 border-emerald-400 text-emerald-900' : 'bg-amber-50 border-amber-400 text-amber-900'}`}>
-            {cloudError ? 'Không tải được phòng. Vui lòng thử lại.' : cloudReady ? 'Danh sách phòng đang mở' : 'Đang tìm phòng…'}
+            {cloudError ? cloudError : cloudReady ? 'Danh sách phòng đang mở' : 'Đang tìm phòng…'}
           </div>
+          {joinError && <div role="alert" className="mb-2 p-2 rounded border border-red-500 bg-red-50 text-red-900 text-xs">{joinError}</div>}
           {/* Tabs: Chỉ có Tạo phòng, Phòng Public, Phòng Private */}
           <div className="flex gap-1 mb-3 border-b border-[#808080] pb-1">
             <button
@@ -140,15 +155,13 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="text-[11px] font-mono text-stone-600 flex items-center gap-1 bg-stone-100 px-1.5 py-0.5 rounded border border-stone-300">
                             <Users className="w-3 h-3 text-stone-500" />
-                            {room.players.length}/{room.maxPlayers || 30}
+                            {room.memberCount ?? room.players?.length ?? 1}/{room.maxPlayers || 30}
                           </span>
                           <RetroButton
                             size="sm"
                             variant="primary"
-                            onClick={() => {
-                              onJoinRoom(room.code);
-                              onClose();
-                            }}
+                            disabled={joiningCode !== null}
+                            onClick={() => { void tryJoin(room.code); }}
                           >
                             Vào Chiếu
                           </RetroButton>
@@ -196,7 +209,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                     type="submit"
                     variant="primary"
                     size="md"
-                    disabled={!privateCode.trim()}
+                    disabled={!privateCode.trim() || joiningCode !== null}
                     icon={<Search className="w-3.5 h-3.5" />}
                   >
                     Vào Phòng Riêng
@@ -288,7 +301,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
 
               {createRoomError && (
                 <div role="alert" className="p-2 rounded border border-red-500 bg-red-50 text-red-900 text-xs break-words">
-                  {'Không tạo được phòng. Kiểm tra kết nối và tài khoản, sau đó thử lại.'}
+                  {createRoomError}
                 </div>
               )}
               <div className="pt-2 flex justify-end gap-2 border-t border-stone-200">
@@ -313,7 +326,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                         });
                         onClose();
                       } catch (error) {
-                        setCreateRoomError('Không tạo được phòng. Vui lòng thử lại.');
+                        setCreateRoomError(error instanceof Error ? error.message : 'Không tạo được phòng. Vui lòng thử lại.');
                       } finally {
                         setIsCreatingRoom(false);
                       }

@@ -36,7 +36,8 @@ import {
   sendWorldChatMessage,
   subscribeToRoomChat,
   sendRoomChatMessage,
-  sendRoomBuzz
+  sendRoomBuzz,
+  beginWorldChatSession
 } from './features/chat/firebaseChatService';
 import {
   createOnlineRoom,
@@ -51,20 +52,22 @@ import {
   sendRoomReaction,
   subscribeToRoomReactions,
   subscribeToRoomKinhClaims,
-  sendRoomKinhClaim
+  sendRoomKinhClaim,
+  ensureRoomChatJoinTime
 } from './features/room/firebaseRoomService';
 import {
   syncProfileToFirestoreThrottled,
   cancelPendingProfileSync,
-  flushPendingProfileSync
+  flushPendingProfileSync, logoutPlayer
 } from './features/auth/firebaseAuthService';
 import { auth, db } from './services/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { createStarterProfile } from './features/progression/progressionStore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 // Modals
 import { AuthModal } from './features/auth/AuthModal';
+import { AccountModal } from './features/auth/AccountModal';
 import { RoomModal } from './features/room/RoomModal';
 import { CharacterModal } from './features/characters/CharacterModal';
 import { ShopModal } from './features/progression/ShopModal';
@@ -97,11 +100,16 @@ export default function App() {
 
   // User Profile
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
+  const displayNameRef = useRef(profile.displayName);
+  displayNameRef.current = profile.displayName;
   const [readyUserId, setReadyUserId] = useState<string | null>(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [authIssue, setAuthIssue] = useState<string | null>(null);
   const [chatConnection, setChatConnection] = useState<{world: 'connecting'|'online'|'offline'|'error'; room: 'connecting'|'online'|'offline'|'error'}>({ world:'connecting', room:'connecting' });
   const [chatConnectionError, setChatConnectionError] = useState<{world:string|null;room:string|null}>({ world:null, room:null });
+  const [worldChatJoinedAt, setWorldChatJoinedAt] = useState<Timestamp | null>(null);
+  const [roomChatJoinedAt, setRoomChatJoinedAt] = useState<{roomId:string;since:Timestamp} | null>(null);
+  const legacyMemberMigratedRef = useRef<Set<string>>(new Set());
   const handledInviteRef = useRef<string | null>(null);
   // Each rendered VIP animation comes from one newly received message.
   // The first chat snapshot is history, not a new event.
@@ -125,6 +133,8 @@ export default function App() {
     if (seen.size > 600) seenVipMessagesRef.current = new Set(Array.from(seen).slice(-300));
   }, []);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isAccountOpen, setIsAccountOpen] = useState(false);
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
 
   // Game Settings: Auto-mark is TRUE by default, Ticket Count is strictly 1!
   const [settings, setSettings] = useState<GameSettings>({
@@ -140,7 +150,6 @@ export default function App() {
 
   // Right sidebar tab in match view ('board' | 'players' | 'chat')
   const [matchRightTab, setMatchRightTab] = useState<'board' | 'players' | 'chat'>('players');
-  const [activeChatChannel, setActiveChatChannel] = useState<'room'|'world'>('room');
 
   // Core Game State
   const [gameState, setGameState] = useState<GameStatus>('WAITING');
@@ -163,6 +172,7 @@ export default function App() {
   const winnerPendingRef = useRef<{name:string;rowNumbers:number[]} | null>(null);
   const hasPlayedNearEndRef = useRef(false);
   const playersRef = useRef<PlayerState[]>([]);
+  const rosterRoomIdRef = useRef<string | null>(null);
   const handleGameOverRef = useRef<((name:string, isUser:boolean, row?:number[])=>void) | null>(null);
   const remoteRoundResetRef = useRef<(() => void) | null>(null);
   const kinClaimPendingRef = useRef(false);
@@ -269,26 +279,8 @@ export default function App() {
   const [activeVipEffect, setActiveVipEffect] = useState<string | null>(null);
 
   // 90s Cyber Chat & Buzz
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome-1',
-      senderId: 'system',
-      senderName: 'Ban Tổ Chức Hội Chợ',
-      characterId: 'chi_ba',
-      text: '🏮 Chào mừng quý khách ghé thăm Đại Nhạc Hội Lô Tô 199x! Mỗi người chọn đúng 5 số; hệ thống tự đánh dấu, đủ 5 số hãy bấm KINH NGAY!',
-      timestamp: Date.now(),
-      channel: 'room'
-    },
-    {
-      id: 'welcome-2',
-      senderId: 'system',
-      senderName: 'Tổng Đài Thế Giới',
-      characterId: 'cu_teo',
-      text: '🌐 Kênh thế giới trực tuyến: Phòng chơi có thể đón đến 100 người!',
-      timestamp: Date.now(),
-      channel: 'world'
-    }
-  ]);
+  // Only real messages received during this browser session are shown.
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isBuzzing, setIsBuzzing] = useState<boolean>(false);
 
   // Modals
@@ -409,14 +401,18 @@ export default function App() {
 
   // Flush noncritical profile writes as the player hides the browser tab.
   useEffect(() => {
-    const onHidden = () => { if (document.visibilityState === 'hidden') void flushPendingProfileSync(); };
+    const onHidden = () => {
+      const visible = document.visibilityState === 'visible';
+      setPageVisible(visible);
+      if (!visible) void flushPendingProfileSync();
+    };
     document.addEventListener('visibilitychange', onHidden);
     return () => document.removeEventListener('visibilitychange', onHidden);
   }, []);
 
   // Subscribe to real-time public rooms from Firestore
   useEffect(() => {
-    if (!readyUserId || !isRoomModalOpen || document.visibilityState !== 'visible') return;
+    if (!readyUserId || !isRoomModalOpen || !pageVisible) return;
     setRoomCloudReady(false);
     setRoomCloudError(null);
     const unsubPublicRooms = subscribeToPublicRooms((rooms) => setPublicRooms(rooms), err => {
@@ -427,12 +423,32 @@ export default function App() {
       if (fromServer) setRoomCloudError(null);
     });
     return () => unsubPublicRooms();
-  }, [isRoomModalOpen, readyUserId]);
+  }, [isRoomModalOpen, readyUserId, pageVisible]);
+
+  // One session start per authenticated page open, never a recurring heartbeat.
+  // The server timestamp is also required by Firestore Rules for chat history access.
+  useEffect(() => {
+    setWorldChatJoinedAt(null);
+    setMessages(previous => previous.filter(message => message.channel !== 'world'));
+    if (!readyUserId) return;
+    let active = true;
+    beginWorldChatSession(readyUserId).then(joinedAt => {
+      if (!active) return;
+      setWorldChatJoinedAt(joinedAt);
+      setChatConnectionError(previous => ({ ...previous, world: null }));
+    }).catch(() => {
+      if (!active) return;
+      setChatConnection(previous => ({ ...previous, world: 'error' }));
+      setChatConnectionError(previous => ({ ...previous, world: 'Không bắt đầu được trò chuyện. Hãy thử tải lại trang.' }));
+    });
+    return () => { active = false; };
+  }, [readyUserId]);
 
   // Subscribe to real-time World chat from Firestore
   useEffect(() => {
-    if (!readyUserId || document.visibilityState === 'hidden') return;
-    if (!isWorldChatOpen && (currentView !== 'GAME_MATCH' || matchRightTab !== 'chat' || activeChatChannel !== 'world')) return;
+    if (!readyUserId || !worldChatJoinedAt || !pageVisible) return;
+    // World is a separate modal; offline practice may display it in the sidebar.
+    if (!isWorldChatOpen && !(currentView === 'GAME_MATCH' && !currentRoom && matchRightTab === 'chat')) return;
     setChatConnection(previous => ({...previous, world:'connecting'}));
     setChatConnectionError(previous => ({...previous, world:null}));
     const unsubWorld = subscribeToWorldChat((worldMsgs) => {
@@ -441,7 +457,7 @@ export default function App() {
         const nonWorld = prev.filter(m => m.channel !== 'world');
         return [...nonWorld, ...worldMsgs].sort((a, b) => a.timestamp - b.timestamp);
       });
-    }, error => {
+    }, worldChatJoinedAt, error => {
       setChatConnection(previous => ({...previous, world:'error'}));
       setChatConnectionError(previous => ({...previous, world:'Không tải được tin nhắn. Vui lòng thử lại.'}));
     }, fromServer => {
@@ -449,21 +465,35 @@ export default function App() {
       if (fromServer) setChatConnectionError(previous => ({...previous, world:null}));
     });
     return () => unsubWorld();
-  }, [currentView, matchRightTab, activeChatChannel, isWorldChatOpen, readyUserId, consumeVipChatEffects]);
+  }, [currentView, currentRoom?.id, matchRightTab, isWorldChatOpen, readyUserId, worldChatJoinedAt, pageVisible, consumeVipChatEffects]);
 
   // Gameplay listeners are stable for the lifetime of one room: switching chat tabs
   // MUST NOT detach and re-query room/members/state (billable initial reads).
   useEffect(() => {
     if (!currentRoom?.id) return;
     const roomId = currentRoom.id;
+    setRoomChatJoinedAt(null);
+    setMessages(previous => previous.filter(message => message.channel !== 'room'));
     const unsubRoom = subscribeToRoom(roomId, updated => {
-      if (!updated) { activeRoomRef.current = null; setCurrentRoom(null); setCurrentView('MENU'); return; }
+      if (!updated) { activeRoomRef.current = null; rosterRoomIdRef.current = null; setCurrentRoom(null); setCurrentView('MENU'); return; }
       activeRoomRef.current = updated;
       setCurrentRoom(updated);
     });
     const unsubMembers = subscribeToRoomMembers(roomId, members => {
+      rosterRoomIdRef.current = roomId;
       setPlayers(members);
       playersRef.current = members;
+      const own = members.find(member => member.id === auth.currentUser?.uid) as (PlayerState & {joinedAt?: Timestamp}) | undefined;
+      if (own?.joinedAt instanceof Timestamp) {
+        setRoomChatJoinedAt(previous => previous?.roomId === roomId && previous.since.isEqual(own.joinedAt!)
+          ? previous : { roomId, since: own.joinedAt! });
+      } else if (own && !legacyMemberMigratedRef.current.has(roomId)) {
+        legacyMemberMigratedRef.current.add(roomId);
+        void ensureRoomChatJoinTime(roomId, own.id).catch(() => {
+          setChatConnection(previous => ({ ...previous, room: 'error' }));
+          setChatConnectionError(previous => ({ ...previous, room: 'Không mở được phiên trò chuyện trong phòng.' }));
+        });
+      }
     }, err => console.warn('Không nạp được thành viên phòng:', err.code));
     const unsubState = subscribeToRoomGameState(roomId, state => {
       if (activeRoomRef.current?.hostId === auth.currentUser?.uid) return;
@@ -482,38 +512,38 @@ export default function App() {
       gameStatusRef.current = state.status;
       setGameState(state.status);
       if (state.status === 'GAME_OVER' && state.winnerPlayerName) {
-        setWinnerInfo({ name: state.winnerPlayerName, isUser: state.winnerPlayerName === profile.displayName, rowNumbers: state.winnerRow });
+        setWinnerInfo({ name: state.winnerPlayerName, isUser: state.winnerPlayerName === displayNameRef.current, rowNumbers: state.winnerRow });
       }
     }, err => console.warn('Không nạp được trạng thái online:', err.code));
     return () => { unsubRoom(); unsubMembers(); unsubState(); };
-  }, [currentRoom?.id, profile.displayName]);
+  }, [currentRoom?.id]);
 
   // Chat has its own visibility-scoped listener, disconnected without affecting gameplay.
   useEffect(() => {
-    if (!readyUserId || !currentRoom?.id || currentView !== 'GAME_MATCH' || matchRightTab !== 'chat' || activeChatChannel !== 'room') return;
+    if (!readyUserId || !pageVisible || isWorldChatOpen || !currentRoom?.id || roomChatJoinedAt?.roomId !== currentRoom.id || currentView !== 'GAME_MATCH' || matchRightTab !== 'chat') return;
     setChatConnection(previous => ({...previous, room:'connecting'}));
     setChatConnectionError(previous => ({...previous, room:null}));
     return subscribeToRoomChat(currentRoom.id, roomMsgs => {
       consumeVipChatEffects(roomMsgs, 'room', currentRoom.id);
       setMessages(prev => [...prev.filter(m => m.channel !== 'room'), ...roomMsgs]
         .sort((a, b) => a.timestamp - b.timestamp));
-    }, error => {
+    }, roomChatJoinedAt.since, error => {
       setChatConnection(previous => ({...previous, room:'error'}));
       setChatConnectionError(previous => ({...previous, room:'Không tải được tin nhắn trong phòng.'}));
     }, fromServer => {
       setChatConnection(previous => ({...previous, room:fromServer?'online':'offline'}));
       if (fromServer) setChatConnectionError(previous => ({...previous, room:null}));
     });
-  }, [readyUserId, currentRoom?.id, currentView, matchRightTab, activeChatChannel, consumeVipChatEffects]);
+  }, [readyUserId, pageVisible, isWorldChatOpen, currentRoom?.id, roomChatJoinedAt, currentView, matchRightTab, consumeVipChatEffects]);
 
   useEffect(() => {
-    if (!currentRoom?.id || currentView !== 'GAME_MATCH') return;
+    if (!pageVisible || !currentRoom?.id || currentView !== 'GAME_MATCH') return;
     return subscribeToRoomReactions(currentRoom.id, reaction => {
       if (reaction.senderId !== auth.currentUser?.uid) {
         addFloatingEmote(reaction.senderName, reaction.emoji, reaction.label);
       }
     });
-  }, [currentRoom?.id, currentView, addFloatingEmote]);
+  }, [currentRoom?.id, currentView, pageVisible, addFloatingEmote]);
 
   // Only the host listens to KINH claims; each claim is one event, NOT a polling loop.
   useEffect(() => {
@@ -544,9 +574,7 @@ export default function App() {
       broadcastChannelRef.current = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
       broadcastChannelRef.current.onmessage = (event) => {
         const { type, payload } = event.data;
-        if (type === 'NEW_CHAT_MESSAGE') {
-          setMessages(prev => [...prev, payload]);
-        } else if (type === 'BUZZ') {
+        if (type === 'BUZZ') {
           triggerScreenBuzz();
         } else if (type === 'VIP_EFFECT') {
           setActiveVipEffect(payload);
@@ -571,7 +599,10 @@ export default function App() {
     if (!inviteCode || !readyUserId || profile.id !== readyUserId) return;
     if (handledInviteRef.current === inviteCode) return;
     handledInviteRef.current = inviteCode;
-    void handleJoinRoom(inviteCode);
+    void handleJoinRoom(inviteCode).catch(error => {
+      setRoomCloudError(error instanceof Error ? error.message : 'Không thể vào phòng từ lời mời.');
+      setIsRoomModalOpen(true);
+    });
   }, [readyUserId, profile.id]);
 
   useEffect(() => {
@@ -610,8 +641,14 @@ export default function App() {
     if (!readyUserId || readyUserId !== auth.currentUser?.uid || auth.currentUser?.isAnonymous) {
       return { allowed:false, filteredText:'', reason:'Hãy đăng nhập để gửi tin nhắn.' };
     }
-    if (channel === 'world') return sendWorldChatMessage(sender, text, isVipEmoji);
-    if (currentRoom?.id) return sendRoomChatMessage(currentRoom.id, sender, text, isVipEmoji);
+    if (channel === 'world') {
+      if (!worldChatJoinedAt) return {allowed:false, filteredText:'', reason:'Kênh Thế Giới chưa sẵn sàng. Hãy thử lại.'};
+      return sendWorldChatMessage(sender, text, isVipEmoji);
+    }
+    if (currentRoom?.id) {
+      if (roomChatJoinedAt?.roomId !== currentRoom.id) return {allowed:false, filteredText:'', reason:'Đang kết nối trò chuyện trong phòng. Hãy thử lại.'};
+      return sendRoomChatMessage(currentRoom.id, sender, text, isVipEmoji);
+    }
     return { allowed:false, filteredText:'', reason:'Hãy vào phòng online để sử dụng chat phòng.' };
   };
 
@@ -701,7 +738,7 @@ export default function App() {
       const seconds = Math.max(0, Math.ceil((selectionDeadlineRef.current - Date.now()) / 1000));
       setSelectionSecondsLeft(seconds);
       if (seconds === 0 && !selectionLockedRef.current) finalizePacks([...chosenPacks, selectedFive]);
-    }, 200);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [currentView, gameState, selectionLocked, selectedFive, chosenPacks, finalizePacks]);
 
@@ -765,7 +802,9 @@ export default function App() {
       const bots = createOfflineBots(29, MAX_SOUND_NUMBER);
       allPlayers = [userPlayer, ...bots];
     } else if (liveRoom) {
-      allPlayers = liveRoom.players.length > 0 ? liveRoom.players : [userPlayer];
+      // Live roster is supplied by the members listener; do not treat room.players as current.
+      allPlayers = rosterRoomIdRef.current === liveRoom.id && playersRef.current.length
+        ? playersRef.current : [userPlayer];
     }
     setPlayers(allPlayers);
     playersRef.current = allPlayers;
@@ -773,7 +812,6 @@ export default function App() {
     // Không có quyền đánh dấu trước: tất cả 5 số chỉ được đánh dấu khi âm thanh mở số.
 
     setGameState('WAITING');
-    setActiveChatChannel(mode === 'offline_bot' ? 'world' : 'room');
     setCurrentView('GAME_MATCH');
     if (mode === 'online_friend' && liveRoom?.hostId === auth.currentUser?.uid) {
       void publishOwnRoomTickets(liveRoom.id, userPlayer, []).catch(error => console.warn('Không reset được vé chủ phòng:', error));
@@ -1291,6 +1329,7 @@ export default function App() {
     };
     try {
       const room = await createOnlineRoom(data, hostPlayer);
+      rosterRoomIdRef.current = null;
       activeRoomRef.current = room;
       setCurrentRoom(room);
       setSettings(prev => ({ ...prev, mode: 'online_friend', callIntervalSeconds: room.callIntervalSeconds }));
@@ -1309,9 +1348,9 @@ export default function App() {
     };
     const result = await joinOnlineRoom(code, joining, passwordInput);
     if (!result.success || !result.room) {
-      alert(result.error || 'Không vào được phòng online.');
-      return;
+      throw new Error(result.error || 'Không vào được phòng online.');
     }
+    rosterRoomIdRef.current = null;
     activeRoomRef.current = result.room;
     setCurrentRoom(result.room);
     setSettings(prev => ({ ...prev, mode: 'online_friend', callIntervalSeconds: result.room!.callIntervalSeconds }));
@@ -1322,6 +1361,7 @@ export default function App() {
     const oldRoom = activeRoomRef.current;
     if (oldRoom) void leaveOnlineRoom(oldRoom.id, profile.id).catch(error => console.warn('Lỗi rời phòng:', error));
     activeRoomRef.current = null;
+    rosterRoomIdRef.current = null;
     setCurrentRoom(null);
     setSettings(prev => ({ ...prev, mode: 'offline_bot' }));
   };
@@ -1507,7 +1547,7 @@ export default function App() {
           onOpenShop={() => setIsShopModalOpen(true)}
           onOpenLeaderboard={() => setIsLeaderboardOpen(true)}
           onOpenHistory={() => setIsHistoryOpen(true)}
-          onOpenAuth={() => setIsAuthOpen(true)}
+          onOpenAuth={() => setIsAccountOpen(true)}
           onOpenLuckyWheel={() => setIsLuckyWheelOpen(true)}
           onOpenWorldChat={() => setIsWorldChatOpen(true)}
         />
@@ -1745,10 +1785,10 @@ export default function App() {
                   {matchRightTab === 'chat' && (
                     <ChatPanel
                       userId={profile.id}
-                      connectionState={chatConnection[activeChatChannel]}
-                      connectionError={chatConnectionError[activeChatChannel]}
-                      activeChannel={activeChatChannel}
-                      onChannelChange={setActiveChatChannel}
+                      connectionState={chatConnection[currentRoom ? 'room' : 'world']}
+                      connectionError={chatConnectionError[currentRoom ? 'room' : 'world']}
+                      channel={currentRoom ? 'room' : 'world'}
+                      onOpenWorldChat={currentRoom ? () => setIsWorldChatOpen(true) : undefined}
                       messages={messages}
                       onSendMessage={handleSendMessage}
                       onSendBuzz={handleSendBuzz}
@@ -1845,6 +1885,34 @@ export default function App() {
         </div>
       )}
 
+      {/* Account editing is separate from the mandatory login/register flow. */}
+      <AccountModal
+        isOpen={isAccountOpen}
+        profile={profile}
+        onClose={() => setIsAccountOpen(false)}
+        onUpdateProfile={next => {
+          // Name is already written by AccountModal; avoid a duplicate delayed write.
+          setProfile(next); saveProfile(next);
+          const activeRoom = activeRoomRef.current;
+          if (activeRoom) {
+            void (async () => {
+              await updateDoc(doc(db, 'rooms', activeRoom.id, 'members', next.id), { name: next.displayName });
+              if (activeRoom.hostId === next.id) {
+                await updateDoc(doc(db, 'rooms', activeRoom.id), { hostName: next.displayName });
+              }
+            })().catch(() => {});
+          }
+        }}
+        onLogout={async () => {
+          const room = activeRoomRef.current;
+          if (room) await leaveOnlineRoom(room.id, profile.id).catch(() => {});
+          activeRoomRef.current = null;
+          rosterRoomIdRef.current = null;
+          setCurrentRoom(null);
+          setCurrentView('MENU');
+          await logoutPlayer();
+        }}
+      />
       {/* MODALS */}
       <AuthModal
         isOpen={isAuthOpen}
@@ -1865,8 +1933,11 @@ export default function App() {
                 connectionState={chatConnection.world}
                 connectionError={chatConnectionError.world}
                 onSendMessage={handleSendMessage} onSendBuzz={() => {}}
-                isInsideRoom={false} activeChannel="world"
-                onJoinRoomFromChat={code => { setIsWorldChatOpen(false); void handleJoinRoom(code); }}
+                isInsideRoom={false} channel="world"
+                onJoinRoomFromChat={code => { setIsWorldChatOpen(false); void handleJoinRoom(code).catch(error => {
+                  setRoomCloudError(error instanceof Error ? error.message : 'Chưa vào được phòng.');
+                  setIsRoomModalOpen(true);
+                }); }}
                 unlockedVipEmojis={profile.unlockedItemIds} onTriggerVipEffect={triggerVipEffect}/>
             </div>
           </div>

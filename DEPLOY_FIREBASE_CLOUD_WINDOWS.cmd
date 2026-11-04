@@ -2,8 +2,8 @@
 setlocal
 cd /d "%~dp0"
 title LO TO 199X - CAP NHAT FIRESTORE RULES
-set "PROJECT_ID=leafy-concept-qt8c4"
-set "DATABASE_ID=ai-studio-lthich199xlthoin-2cb02316-a219-47a4-9acb-21d18684e2a5"
+set "PROJECT_ID=loto-83a1a"
+set "DATABASE_ID=(default)"
 echo ================================================
 echo  LO TO 199X - FIRESTORE NAMED DATABASE RULES
 echo ================================================
@@ -51,7 +51,7 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo [OK] Lenh deploy rules thanh cong. Thu tao phong public bang tai khoan da dang nhap.
-echo Neu van co loi, ghi lai buoc bi tu choi tren giao dien (tao phong/chu phong/van choi).
+echo [OK] Lenh deploy rules thanh cong. Cap nhat frontend tren Render/Vercel cung ban.
+echo Luu y: giao dich tao/join phong CAN rules moi, khong su dung code va rules lech phien ban.
 pause
 endlocal

@@ -74,7 +74,8 @@ export function validateAndFilterChatMessage(
 
   // 3. Spam Rate-limit check (at least 1.0s between messages)
   const now = Date.now();
-  const tracker = userSpamState.get(userId) || { lastMessageTime: 0, lastMessageText: '' };
+  const channelUserKey = `${channel}:${userId}`;
+  const tracker = userSpamState.get(channelUserKey) || { lastMessageTime: 0, lastMessageText: '' };
 
   const minInterval = channel === 'world' ? 1200 : 800; // World channel slightly stricter
   if (now - tracker.lastMessageTime < minInterval) {
@@ -98,7 +99,7 @@ export function validateAndFilterChatMessage(
   const filteredText = maskProfanity(text);
 
   // Update spam tracker
-  userSpamState.set(userId, {
+  userSpamState.set(channelUserKey, {
     lastMessageTime: now,
     lastMessageText: text
   });

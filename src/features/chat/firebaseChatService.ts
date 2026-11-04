@@ -6,11 +6,25 @@ import {
   onSnapshot,
   addDoc,
   serverTimestamp,
-  FirestoreError
+  FirestoreError, Timestamp, doc, setDoc, getDocFromServer, where
 } from 'firebase/firestore';
 import { db, auth } from '../../services/firebase';
-import { ChatMessage } from './yahooEmojis';
+import { ChatMessage, renderChatEmojiCodes } from './yahooEmojis';
 import { validateAndFilterChatMessage, FilterResult } from './profanityFilter';
+
+/** One write + one server read per signed-in browser session; no heartbeat.
+ * Used as a server-sourced lower bound for world-chat visibility.
+ * Never persist this across new page opens.
+ */
+export async function beginWorldChatSession(uid: string): Promise<Timestamp> {
+  if (auth.currentUser?.uid !== uid || auth.currentUser.isAnonymous) throw new Error('Cần đăng nhập.');
+  const ref = doc(db, 'chat_sessions', uid);
+  await setDoc(ref, { uid, joinedAt: serverTimestamp() });
+  const snapshot = await getDocFromServer(ref);
+  const timestamp = snapshot.data()?.joinedAt;
+  if (!(timestamp instanceof Timestamp)) throw new Error('Không thể bắt đầu phiên trò chuyện.');
+  return timestamp;
+}
 
 /**
  * Subscribe to real-time World chat messages with low latency.
@@ -18,11 +32,12 @@ import { validateAndFilterChatMessage, FilterResult } from './profanityFilter';
  */
 export function subscribeToWorldChat(
   onMessagesUpdate: (messages: ChatMessage[]) => void,
+  joinedAt: Timestamp,
   onError?: (error: FirestoreError) => void,
   onConnection?: (fromServer: boolean) => void
 ): () => void {
   const worldRef = collection(db, 'world_messages');
-  const q = query(worldRef, orderBy('createdAt', 'desc'), limit(40));
+  const q = query(worldRef, where('createdAt', '>=', joinedAt), orderBy('createdAt', 'desc'), limit(40));
 
   return onSnapshot(
     q, { includeMetadataChanges: true },
@@ -76,7 +91,7 @@ export async function sendWorldChatMessage(
       senderName: sender.name,
       characterId: sender.characterId,
       avatar: sender.avatar || '',
-      text: filter.filteredText,
+      text: renderChatEmojiCodes(filter.filteredText),
       timestamp: Date.now(),
       channel: 'world',
       isVipEmoji: isVipEmoji || null,
@@ -99,12 +114,13 @@ export async function sendWorldChatMessage(
 export function subscribeToRoomChat(
   roomId: string,
   onMessagesUpdate: (messages: ChatMessage[]) => void,
+  joinedAt: Timestamp,
   onError?: (error: FirestoreError) => void,
   onConnection?: (fromServer: boolean) => void
 ): () => void {
   if (!roomId) return () => {};
   const roomMsgRef = collection(db, 'rooms', roomId, 'messages');
-  const q = query(roomMsgRef, orderBy('createdAt', 'desc'), limit(40));
+  const q = query(roomMsgRef, where('createdAt', '>=', joinedAt), orderBy('createdAt', 'desc'), limit(40));
 
   return onSnapshot(
     q, { includeMetadataChanges: true },
@@ -158,7 +174,7 @@ export async function sendRoomChatMessage(
       senderName: sender.name,
       characterId: sender.characterId,
       avatar: sender.avatar || '',
-      text: filter.filteredText,
+      text: renderChatEmojiCodes(filter.filteredText),
       timestamp: Date.now(),
       channel: 'room',
       isVipEmoji: isVipEmoji || null,

@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { RETRO_9X_EMOJIS, ChatMessage } from './yahooEmojis';
+import { RETRO_9X_EMOJIS, ChatMessage, renderChatEmojiCodes } from './yahooEmojis';
 import { audioSynthesizer } from '../audio/audioSynthesizer';
 import { RetroButton } from '../../components/ui/RetroButton';
 import type { FilterResult } from './profanityFilter';
-import { Smile, Send, BellRing, Mic, MicOff, Globe, Users, Share2, Sparkles, AlertTriangle } from 'lucide-react';
+import { Smile, Send, BellRing, MicOff, Globe, Users, Share2, Sparkles, AlertTriangle } from 'lucide-react';
 
 interface ChatPanelProps {
   userId?: string;
@@ -13,8 +13,8 @@ interface ChatPanelProps {
   currentRoomCode?: string;
   roomCapacity?: number;
   isInsideRoom: boolean;
-  activeChannel?: 'room' | 'world';
-  onChannelChange?: (channel: 'room' | 'world') => void;
+  channel: 'room' | 'world';
+  onOpenWorldChat?: () => void;
   onShareRoomToWorld?: () => void;
   onJoinRoomFromChat?: (code: string) => void;
   unlockedVipEmojis?: string[];
@@ -31,8 +31,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   currentRoomCode,
   roomCapacity,
   isInsideRoom,
-  activeChannel,
-  onChannelChange,
+  channel,
+  onOpenWorldChat,
   onShareRoomToWorld,
   onJoinRoomFromChat,
   onTriggerVipEffect,
@@ -40,9 +40,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   connectionState = 'connecting',
   connectionError = null
 }) => {
-  const [localActiveTab, setLocalActiveTab] = useState<'room' | 'world'>(isInsideRoom ? 'room' : 'world');
-  const activeTab = activeChannel ?? localActiveTab;
-  const setActiveTab = (next: 'room' | 'world') => { setLocalActiveTab(next); onChannelChange?.(next); };
+  const activeTab = channel;
   const [inputText, setInputText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiTab, setEmojiTab] = useState<'retro' | 'vip'>('retro');
@@ -109,7 +107,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       <div className="bg-gradient-to-r from-[#1e3a8a] to-[#2563eb] text-white px-2 py-1 flex items-center justify-between font-bold rounded-t-sm shadow-inner">
         <div className="flex items-center gap-1.5">
           <span className="text-yellow-300 font-pixel text-sm">💬</span>
-          <span className="tracking-tight font-pixel text-sm">HỘP TRÒ CHUYỆN HỘI CHIẾU</span>
+          <span className="tracking-tight font-pixel text-sm">{channel === 'world' ? '🌍 CHAT THẾ GIỚI' : '🏮 CHAT TRONG PHÒNG'}</span>
           <span role="status" className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${connectionState === 'online' ? 'bg-emerald-700' : connectionState === 'error' ? 'bg-red-700' : 'bg-amber-700'}`}>
             {connectionState === 'error' ? 'Không thể gửi tin' : connectionState === 'offline' ? 'Mất mạng' : connectionState === 'connecting' ? 'Đang vào chat…' : 'Trò chuyện'}
           </span>
@@ -127,41 +125,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       </div>
 
       {connectionError && <p role="alert" className="bg-red-50 border border-red-300 px-2 py-1 text-red-800 text-[11px] font-semibold">Không thể tải tin nhắn. Hãy thử lại sau.</p>}
-      {/* Tabs: Kênh Chiếu Hội vs Kênh Giao Lưu */}
-      <div className="flex items-center gap-1 px-1 pt-1 bg-[#d4d0c8] border-b border-[#808080]">
-        {isInsideRoom && <button
-          onClick={() => setActiveTab('room')}
-          className={`px-3 py-1 text-[11px] font-bold rounded-t flex items-center gap-1 cursor-pointer transition-colors ${
-            activeTab === 'room'
-              ? 'bg-[#f0f0f0] text-blue-900 border-t-2 border-l-2 border-r-2 border-[#808080] -mb-px'
-              : 'text-stone-600 hover:text-black'
-          }`}
-        >
-          <Users className="w-3 h-3" />
-          <span>Chiếu Hiện Tại {currentRoomCode ? `(#${currentRoomCode})` : ''}</span>
-        </button>}
-
-        <button
-          onClick={() => setActiveTab('world')}
-          className={`px-3 py-1 text-[11px] font-bold rounded-t flex items-center gap-1 cursor-pointer transition-colors ${
-            activeTab === 'world'
-              ? 'bg-[#f0f0f0] text-blue-900 border-t-2 border-l-2 border-r-2 border-[#808080] -mb-px'
-              : 'text-stone-600 hover:text-black'
-          }`}
-        >
-          <Globe className="w-3 h-3 text-emerald-600" />
-          <span>Kênh Giao Lưu</span>
-        </button>
-
-        {isInsideRoom && onShareRoomToWorld && (
-          <button
-            onClick={onShareRoomToWorld}
-            className="ml-auto text-[10px] text-blue-950 font-bold hover:underline flex items-center gap-1 py-0.5 px-1.5 cursor-pointer bg-blue-100 rounded border border-blue-300"
-            title="Kêu gọi kênh thế giới vào chơi"
-          >
-            <Share2 className="w-3 h-3 text-blue-700" />
-            <span className="hidden sm:inline">Phát Loa Phòng</span>
+      {/* Separate panels; no cross-channel tabs or cached history mixing. */}
+      <div className="flex flex-wrap items-center justify-between gap-1 bg-[#d4d0c8] border-b border-[#808080] px-2 py-1 text-[11px] font-semibold">
+        <span className="flex items-center gap-1">
+          {channel === 'room' ? <Users className="w-3.5 h-3.5" /> : <Globe className="w-3.5 h-3.5" />}
+          {channel === 'room' ? `Phòng ${currentRoomCode || ''}` : 'Kênh Thế Giới'}
+        </span>
+        {channel === 'room' && onOpenWorldChat && (
+          <button type="button" onClick={onOpenWorldChat} className="win98-btn flex items-center gap-1 px-2 py-0.5 bg-blue-800 text-white cursor-pointer">
+            <Globe className="w-3 h-3"/> Chat Thế Giới
           </button>
+        )}
+        {channel === 'room' && onShareRoomToWorld && (
+          <button type="button" onClick={onShareRoomToWorld} className="text-blue-900 font-bold underline cursor-pointer" title="Mời người chơi vào phòng">Mời vào phòng</button>
         )}
       </div>
 
@@ -174,7 +150,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       <div className="flex-1 bg-white border border-[#808080] p-2 overflow-y-auto space-y-1.5 min-h-[160px] win98-box-inset">
         {filteredMessages.length === 0 ? (
           <div className="text-center text-stone-400 py-6 text-xs italic">
-            Chưa có tin nhắn nào. Hãy gửi lời chào đến bà con trong phòng!
+            Chưa có tin mới trong phiên này. Hãy bắt đầu cuộc trò chuyện!
           </div>
         ) : (
           filteredMessages.map((msg) => {
@@ -205,7 +181,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 <span className="font-bold text-blue-900 mr-1.5 hover:underline cursor-pointer">
                   {msg.senderName}:
                 </span>
-                <span className="text-stone-800 break-words">{msg.text}</span>
+                <span className="text-stone-800 break-words whitespace-pre-wrap">{renderChatEmojiCodes(msg.text)}</span>
 
                 {isInvite && extractedCode && onJoinRoomFromChat && (
                   <div className="mt-1 p-1.5 bg-amber-50 border border-amber-300 rounded flex items-center justify-between">
@@ -252,14 +228,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 <button
                   key={emoji.code}
                   onClick={() => {
-                    setInputText(prev => prev + ' ' + emoji.code);
+                    setInputText(prev => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}${emoji.symbol} `);
                     setShowEmojiPicker(false);
                   }}
                   className="p-1 bg-white hover:bg-yellow-100 border border-stone-300 rounded flex flex-col items-center justify-center cursor-pointer text-xs"
                   title={`${emoji.name} (${emoji.code})`}
                 >
                   <span className="text-base">{emoji.symbol}</span>
-                  <span className="text-[9px] font-mono font-bold text-stone-700">{emoji.code}</span>
+                  <span className="text-[9px] font-semibold text-stone-700">{emoji.name}</span>
                 </button>
               ))}
             </div>

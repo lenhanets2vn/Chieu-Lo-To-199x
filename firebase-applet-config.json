@@ -1,12 +1,10 @@
 {
-  "projectId": "leafy-concept-qt8c4",
-  "appId": "1:468191047618:web:df6cc8bc6d82977502b05b",
-  "apiKey": "AIzaSyDWnKFIxoVuw_y99jXoJfH31q4goYIj1Xg",
-  "authDomain": "leafy-concept-qt8c4.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-lthich199xlthoin-2cb02316-a219-47a4-9acb-21d18684e2a5",
-  "storageBucket": "leafy-concept-qt8c4.firebasestorage.app",
-  "messagingSenderId": "468191047618",
-  "measurementId": "",
-  "oAuthClientId": "468191047618-vfc35k8ckbmbgtvih448bh0hg67emb42.apps.googleusercontent.com",
-  "recaptchaSiteKey": ""
+  "apiKey": "AIzaSyDBxXyrffg9Mauyr0vYmoZyR4GG_RiV0Q4",
+  "authDomain": "loto-83a1a.firebaseapp.com",
+  "projectId": "loto-83a1a",
+  "storageBucket": "loto-83a1a.firebasestorage.app",
+  "messagingSenderId": "401789333507",
+  "appId": "1:401789333507:web:761e676210b64b50d1de36",
+  "measurementId": "G-JV3BVZXBPY",
+  "firestoreDatabaseId": "(default)"
 }

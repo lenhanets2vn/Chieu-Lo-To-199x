@@ -43,3 +43,13 @@ export interface ChatMessage {
   isBuzz?: boolean;
   isVipEmoji?: string;
 }
+
+
+
+/** Convert legacy Yahoo 9x emoticon codes to visible Unicode emoji. */
+const emojiByCode: ReadonlyMap<string, string> = new Map(RETRO_9X_EMOJIS.map(item => [item.code, item.symbol]));
+const escapedCodes = RETRO_9X_EMOJIS.map(item => item.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+const retroCodePattern = new RegExp(escapedCodes.sort((a, b) => b.length - a.length).join('|'), 'g');
+export function renderChatEmojiCodes(text: string): string {
+  return text.replace(retroCodePattern, code => emojiByCode.get(code) ?? code);
+}

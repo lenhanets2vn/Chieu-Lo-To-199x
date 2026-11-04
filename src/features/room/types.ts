@@ -13,7 +13,8 @@ export interface GameRoom {
   hostId: string;
   hostName: string;
   maxPlayers: number;
-  players: PlayerState[];
+  players: PlayerState[]; // legacy host snapshot; live roster is in members collection
+  memberCount?: number;
   status: GameStatus;
   currentBallNumber: number | null;
   calledHistory: number[];

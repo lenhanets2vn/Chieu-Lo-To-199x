@@ -9,7 +9,8 @@ service cloud.firestore {
       return signedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
     }
     function isMember(roomId) {
-      return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+      return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId))
+        && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
     }
     match /users/{uid} {
       allow get: if me(uid);
@@ -42,26 +43,44 @@ service cloud.firestore {
         && request.resource.data.hostId == request.auth.uid
         && request.resource.data.players.size() == 1
         && request.resource.data.players[0].id == request.auth.uid
+        && request.resource.data.memberCount == 1
         && request.resource.data.maxPlayers >= 2 && request.resource.data.maxPlayers <= 100
         && request.resource.data.status == 'WAITING'
         && smallText(request.resource.data.name, 70)
-        && !('password' in request.resource.data);
-      // Joiners can ONLY append their own profile to the roster. Existing profiles cannot change.
+        && !('password' in request.resource.data)
+        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)).data.id == request.auth.uid
+        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/state/current).data.status == 'WAITING';
+      // Admission/removal is a transaction: members/{uid} and memberCount
+      // must change together. Prevent a client from editing other profiles.
       allow update: if signedIn() && (
         (resource.data.hostId == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players', 'hostName']))
-        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players'])
-          && request.resource.data.players.size() == resource.data.players.size() + 1
-          && request.resource.data.players.size() <= resource.data.maxPlayers
-          && request.resource.data.players[resource.data.players.size()].id == request.auth.uid
-          && request.resource.data.players.hasAll(resource.data.players))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostName']))
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
+          && !exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
+          && getAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)).data.id == request.auth.uid
+          && request.resource.data.memberCount == (
+            ('memberCount' in resource.data) ? resource.data.memberCount + 1 : resource.data.players.size() + 1
+          )
+          && request.resource.data.memberCount <= resource.data.maxPlayers
+          && exists(/databases/$(database)/documents/rooms/$(roomId)/state/current)
+          && get(/databases/$(database)/documents/rooms/$(roomId)/state/current).data.status == 'WAITING')
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
+          && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
+          && !existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
+          && request.resource.data.memberCount == (
+            ('memberCount' in resource.data) ? resource.data.memberCount - 1 : resource.data.players.size() - 1
+          )
+          && request.resource.data.memberCount >= 1)
       );
-      allow delete: if signedIn() && resource.data.hostId == request.auth.uid;
+      allow delete: if signedIn() && resource.data.hostId == request.auth.uid
+        && !existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
 
       match /state/{stateId} {
         allow get: if signedIn() && stateId == 'current';
         allow list: if false;
-        allow create: if stateId == 'current' && isHost(roomId)
+        allow create: if stateId == 'current' && signedIn()
+          && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid
           && request.resource.data.status == 'WAITING';
         allow update: if stateId == 'current' && isHost(roomId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -69,19 +88,42 @@ service cloud.firestore {
           ])
           && request.resource.data.calledHistory is list
           && request.resource.data.calledHistory.size() <= 90;
-        allow delete: if false;
+        allow delete: if isHost(roomId);
       }
       match /members/{uid} {
-        allow get: if isMember(roomId);
+        allow get: if me(uid) || isMember(roomId);
         allow list: if isMember(roomId) && request.query.limit <= 100;
         allow create: if me(uid) && request.resource.data.id == uid
           && request.resource.data.isBot == false
+          && request.resource.data.joinedAt == request.time
           && request.resource.data.tickets is list && request.resource.data.tickets.size() <= 1
-          && get(/databases/$(database)/documents/rooms/$(roomId)).data.players.hasAny([request.resource.data]);
+          && request.resource.data.isHost == (getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == uid)
+          && (
+            (getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == uid
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount == 1
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)/state/current).data.status == 'WAITING')
+            || (exists(/databases/$(database)/documents/rooms/$(roomId)/state/current)
+              && get(/databases/$(database)/documents/rooms/$(roomId)/state/current).data.status == 'WAITING'
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount == (
+                ('memberCount' in get(/databases/$(database)/documents/rooms/$(roomId)).data)
+                  ? get(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount + 1
+                  : get(/databases/$(database)/documents/rooms/$(roomId)).data.players.size() + 1)
+            )
+          );
         allow update: if me(uid) && request.resource.data.id == uid
+          && request.resource.data.isHost == resource.data.isHost
           && request.resource.data.isBot == false
-          && request.resource.data.tickets is list && request.resource.data.tickets.size() <= 1;
-        allow delete: if me(uid);
+          && request.resource.data.tickets is list && request.resource.data.tickets.size() <= 1
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['joinedAt'])
+            || (!('joinedAt' in resource.data) && request.resource.data.joinedAt == request.time));
+        allow delete: if me(uid) && (
+          (isHost(roomId) && !existsAfter(/databases/$(database)/documents/rooms/$(roomId)))
+          || (existsAfter(/databases/$(database)/documents/rooms/$(roomId))
+            && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount == (
+              ('memberCount' in get(/databases/$(database)/documents/rooms/$(roomId)).data)
+                ? get(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount - 1
+                : get(/databases/$(database)/documents/rooms/$(roomId)).data.players.size() - 1))
+        );
       }
       match /claims/{claimId} {
         allow get: if isHost(roomId);
@@ -93,8 +135,12 @@ service cloud.firestore {
         allow update, delete: if false;
       }
       match /messages/{messageId} {
-        allow get: if isMember(roomId);
-        allow list: if isMember(roomId) && request.query.limit <= 40;
+        // The query must include where('createdAt', '>=', own joinedAt).
+        // Chat from before this player entered the room is never readable.
+        allow get: if isMember(roomId)
+          && resource.data.createdAt >= get(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)).data.joinedAt;
+        allow list: if isMember(roomId) && request.query.limit <= 40
+          && resource.data.createdAt >= get(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)).data.joinedAt;
         allow create: if isMember(roomId) && request.resource.data.senderId == request.auth.uid
           && smallText(request.resource.data.text, 500)
           && request.resource.data.createdAt == request.time;
@@ -109,9 +155,20 @@ service cloud.firestore {
         allow update, delete: if false;
       }
     }
+    match /chat_sessions/{uid} {
+      allow get: if me(uid);
+      allow list: if false;
+      allow create, update: if me(uid) && request.resource.data.keys().hasOnly(['uid','joinedAt'])
+        && request.resource.data.uid == uid && request.resource.data.joinedAt == request.time;
+      allow delete: if false;
+    }
     match /world_messages/{messageId} {
-      allow get: if signedIn();
-      allow list: if signedIn() && request.query.limit <= 40;
+      // Rules are NOT filters. The frontend MUST query with createdAt >= joinedAt.
+      allow get: if signedIn() && exists(/databases/$(database)/documents/chat_sessions/$(request.auth.uid))
+        && resource.data.createdAt >= get(/databases/$(database)/documents/chat_sessions/$(request.auth.uid)).data.joinedAt;
+      allow list: if signedIn() && request.query.limit <= 40
+        && exists(/databases/$(database)/documents/chat_sessions/$(request.auth.uid))
+        && resource.data.createdAt >= get(/databases/$(database)/documents/chat_sessions/$(request.auth.uid)).data.joinedAt;
       allow create: if signedIn() && request.resource.data.senderId == request.auth.uid
         && smallText(request.resource.data.text, 500)
         && request.resource.data.createdAt == request.time;

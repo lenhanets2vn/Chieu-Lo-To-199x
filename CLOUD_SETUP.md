@@ -10,7 +10,7 @@
 ## Triển khai thủ công bằng tài khoản có quyền
 
 1. Firebase Console → chọn dự án `leafy-concept-qt8c4`. Kiểm tra tên database Firestore đặt riêng chính xác như trên và khả năng chỉnh sửa security rules của database này. Nếu database không tồn tại, không triển khai lên database khác một cách im lặng.
-2. Authentication → Sign-in method → kích hoạt **Email/Password** và **Anonymous**. Bổ sung domain web Hosting/HTTPS vào Authorized domains.
+2. Authentication → Sign-in method → kích hoạt **Email/Password** và **tắt Anonymous** (không cho chơi với tài khoản khách). Bổ sung domain web Hosting/HTTPS vào Authorized domains.
 3. Bật Firestore API và Hosting theo hướng dẫn Firebase Console; kiểm tra hạn mức/billing.
 4. Tại thư mục mã nguồn, dùng Node.js tương thích với Vite 8, cài các thư viện và build:
 
@@ -58,3 +58,8 @@
 - Thư viện chat mỗi lần mở kênh tải tối đa 40 tin; lần đầu đăng ký/onSnapshot lại vẫn có thể phát sinh tối đa 40 document reads, và Firestore Rules còn có dependent reads.
 - Vòng quay mỗi lượt tối đa một giao dịch đọc+ghi claim, sau đó đồng bộ hồ sơ theo batch.
 - Không có số đo latency/chi phí thực tế vì chưa triển khai và chưa tải thật.
+
+
+## Kênh chat theo phiên
+
+Chi tiết riêng về chat tạm thời, truy vấn thời điểm tham gia và chức năng dọn phòng: xem `CHAT_SESSIONS_AND_CLEANUP.md`. Bộ Rules **bắt buộc** phải triển khai cùng frontend mới.

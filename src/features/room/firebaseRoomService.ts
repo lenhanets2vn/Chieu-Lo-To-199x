@@ -1,7 +1,7 @@
 import {
-  collection, doc, setDoc, getDoc, updateDoc, deleteDoc, query, where,
+  collection, doc, setDoc, updateDoc, query, where,
   limit, orderBy, onSnapshot, addDoc, serverTimestamp, runTransaction,
-  FirestoreError
+  FirestoreError, writeBatch, getDocFromServer
 } from 'firebase/firestore';
 import { db, auth } from '../../services/firebase';
 import { GameRoom } from './types';
@@ -42,7 +42,8 @@ export async function createOnlineRoom(
     hostId: hostPlayer.id,
     hostName: hostPlayer.name,
     maxPlayers: Math.min(100, Math.max(2, params.maxPlayers || 30)),
-    players: [hostPlayer],
+    players: [hostPlayer], // compatibility: roster is now stored in rooms/{id}/members
+    memberCount: 1,
     status: 'WAITING',
     currentBallNumber: null,
     calledHistory: [],
@@ -50,39 +51,24 @@ export async function createOnlineRoom(
     maxNumber: 90,
     createdAt: Date.now()
   };
-  // Keep the three write phases explicit so a Firestore permission error can
-  // identify which document failed. Never claim that a local room is online.
+  // All three documents are created together; never leave an unjoinable room.
   const roomRef = doc(db, 'rooms', room.id);
   const memberRef = doc(db, 'rooms', room.id, 'members', hostPlayer.id);
   const stateRef = doc(db, 'rooms', room.id, 'state', 'current');
-  const explainFailure = (error: unknown, step: string): Error => {
-    const code = (error as { code?: string })?.code || 'unknown';
-    const details = error instanceof Error ? error.message : String(error);
-    if (code === 'permission-denied') {
-      return new Error(`Không có quyền ${step}. Hãy đăng nhập lại rồi thử lần nữa.`);
-    }
-    return new Error(`Không thể ${step} lúc này. Hãy kiểm tra kết nối và thử lại.`);
-  };
+  const batch = writeBatch(db);
+  batch.set(roomRef, room);
+  batch.set(memberRef, { ...hostPlayer, tickets: [], isBot: false, joinedAt: serverTimestamp() });
+  batch.set(stateRef, {
+    status: 'WAITING', currentBallNumber: null, calledHistory: [], updatedAt: serverTimestamp()
+  });
   try {
-    await setDoc(roomRef, room);
+    await batch.commit();
   } catch (error) {
-    throw explainFailure(error, 'tạo phòng');
-  }
-  try {
-    await setDoc(memberRef, hostPlayer);
-  } catch (error) {
-    // Best-effort rollback of an incomplete room; no fake fallback.
-    await deleteDoc(roomRef).catch(() => {});
-    throw explainFailure(error, 'ghi chủ phòng');
-  }
-  try {
-    await setDoc(stateRef, {
-      status: 'WAITING', currentBallNumber: null, calledHistory: [], updatedAt: serverTimestamp()
-    });
-  } catch (error) {
-    await deleteDoc(memberRef).catch(() => {});
-    await deleteDoc(roomRef).catch(() => {});
-    throw explainFailure(error, 'khởi tạo ván chơi');
+    const code = (error as {code?:string})?.code;
+    throw new Error(code === 'permission-denied'
+      ? 'Chưa được cấp quyền mở phòng. Cần cập nhật quy tắc truy cập máy chủ.'
+      : code === 'unavailable' ? 'Kết nối đang gián đoạn. Hãy thử lại.'
+      : 'Không tạo được phòng. Vui lòng thử lại.');
   }
   return room;
 }
@@ -129,7 +115,7 @@ export async function publishOwnRoomTickets(roomId: string, player: PlayerState,
   if (!auth.currentUser || auth.currentUser.uid !== player.id) return;
   await setDoc(doc(db, 'rooms', roomId, 'members', player.id), {
     ...player, tickets: tickets.slice(0, 1), isBot: false
-  });
+  }, { merge: true });
 }
 
 export function subscribeToRoomMembers(roomId: string, onMembers: (players: PlayerState[]) => void,
@@ -140,47 +126,92 @@ export function subscribeToRoomMembers(roomId: string, onMembers: (players: Play
   }, err => onError?.(err));
 }
 
-/** Concurrent joins use Firestore transaction, not getDoc() + blind updateDoc(). */
+
+/** Backfill a join timestamp once for a member from a pre-session release. */
+export async function ensureRoomChatJoinTime(roomId: string, uid: string): Promise<void> {
+  if (auth.currentUser?.uid !== uid) return;
+  const ref = doc(db, 'rooms', roomId, 'members', uid);
+  const snapshot = await getDocFromServer(ref);
+  if (snapshot.exists() && !snapshot.data().joinedAt) {
+    await updateDoc(ref, { joinedAt: serverTimestamp() });
+  }
+}
+
+/**
+ * Atomic membership join. Only a tiny memberCount changes on the room document;
+ * a player's tickets/profile live solely in that player's members/{uid} document.
+ * This avoids repeatedly uploading a 100-player roster on every join.
+ */
 export async function joinOnlineRoom(
   codeOrId: string, player: PlayerState, _passwordInput?: string
 ): Promise<{ success: boolean; room?: GameRoom; error?: string }> {
   try {
     if (!auth.currentUser || auth.currentUser.uid !== player.id) throw new Error('Bạn cần đăng nhập trước khi vào phòng.');
     const roomId = codeOrId.trim().toUpperCase();
-    if (!/^LT[A-Z2-9]{8,18}$/.test(roomId)) throw new Error('Mã phòng không hợp lệ.');
+    if (!/^LT[A-HJ-NP-Z2-9]{8,18}$/.test(roomId)) throw new Error('Mã phòng không hợp lệ. Hãy sao chép đúng mã mời.');
     const roomRef = doc(db, 'rooms', roomId);
     const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
+    const memberRef = doc(db, 'rooms', roomId, 'members', player.id);
     const result = await runTransaction(db, async tx => {
-      const snap = await tx.get(roomRef);
-      const liveSnap = await tx.get(stateRef);
-      if (!snap.exists()) throw new Error('Không tìm thấy phòng này.');
-      const room = snap.data() as GameRoom;
-      if (liveSnap.exists() && liveSnap.data().status !== 'WAITING') throw new Error('Ván đang diễn ra. Hãy chờ chủ phòng mở ván mới.');
-      const players = room.players || [];
-      if (!players.some(p => p.id === player.id)) {
-        if (players.length >= room.maxPlayers) throw new Error('Phòng đã đủ người chơi.');
-        tx.update(roomRef, { players: [...players, { ...player, tickets: [] }] });
+      // All reads MUST precede all writes in a Firestore transaction.
+      const roomSnap = await tx.get(roomRef);
+      const stateSnap = await tx.get(stateRef);
+      const memberSnap = await tx.get(memberRef);
+      if (!roomSnap.exists()) throw new Error('Phòng không tồn tại hoặc đã đóng.');
+      const room = roomSnap.data() as GameRoom;
+      if (!memberSnap.exists()) {
+        if (!stateSnap.exists()) throw new Error('Phòng chưa sẵn sàng. Chủ phòng cần mở lại.');
+        if (stateSnap.data().status !== 'WAITING') {
+          throw new Error('Ván đang diễn ra. Hãy chờ chủ phòng mở ván mới.');
+        }
+        const count = Number.isInteger(room.memberCount) ? room.memberCount! : (room.players?.length || 1);
+        if (count >= room.maxPlayers) throw new Error('Phòng đã đủ người chơi.');
+        tx.set(memberRef, { ...player, tickets: [], isBot: false, isHost: room.hostId === player.id, joinedAt: serverTimestamp() });
+        tx.update(roomRef, { memberCount: count + 1 });
       }
-      return { ...room, players: players.some(p => p.id === player.id) ? players : [...players, player] };
+      return room;
     });
-    const rosterPlayer = result.players.find(p => p.id === player.id) || player;
-    await setDoc(doc(db, 'rooms', roomId, 'members', player.id), { ...rosterPlayer, tickets: [] });
     return { success: true, room: result };
   } catch (err) {
+    const code = (err as {code?: string})?.code || '';
     const message = err instanceof Error ? err.message : '';
     const expected = [
-      'Bạn cần đăng nhập trước khi vào phòng.', 'Mã phòng không hợp lệ.',
-      'Không tìm thấy phòng này.', 'Ván đang diễn ra. Hãy chờ chủ phòng mở ván mới.',
+      'Bạn cần đăng nhập trước khi vào phòng.', 'Mã phòng không hợp lệ. Hãy sao chép đúng mã mời.',
+      'Phòng không tồn tại hoặc đã đóng.', 'Phòng chưa sẵn sàng. Chủ phòng cần mở lại.',
+      'Ván đang diễn ra. Hãy chờ chủ phòng mở ván mới.',
       'Phòng đã đủ người chơi.'
     ];
-    return { success: false, error: expected.includes(message) ? message : 'Không thể vào phòng. Kiểm tra mạng và thử lại.' };
+    return { success: false, error: expected.includes(message) ? message : code === 'permission-denied'
+      ? 'Không có quyền vào phòng. Phiên đăng nhập hoặc quy tắc truy cập chưa hợp lệ.'
+      : code === 'unavailable' ? 'Kết nối đang gián đoạn. Hãy kiểm tra mạng và thử lại.'
+      : 'Chưa vào được phòng. Vui lòng thử lại.' };
   }
 }
 
+/** Leave atomically so a departed user frees one slot. Host leaving closes room. */
 export async function leaveOnlineRoom(roomId: string, playerId: string): Promise<void> {
   if (!auth.currentUser || auth.currentUser.uid !== playerId) return;
-  await deleteDoc(doc(db, 'rooms', roomId, 'members', playerId));
-  // The host can later remove disconnected accounts from the roster. Guest cannot rewrite other players.
+  const roomRef = doc(db, 'rooms', roomId);
+  const memberRef = doc(db, 'rooms', roomId, 'members', playerId);
+  const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
+  await runTransaction(db, async tx => {
+    const roomSnap = await tx.get(roomRef);
+    const memberSnap = await tx.get(memberRef);
+    const stateSnap = await tx.get(stateRef);
+    if (!roomSnap.exists() || !memberSnap.exists()) return;
+    const room = roomSnap.data() as GameRoom;
+    if (room.hostId === playerId) {
+      // Remaining clients observe room deletion and leave; nested historical messages
+      // require optional scheduled backend cleanup (Firestore does not cascade-delete).
+      tx.delete(memberRef);
+      if (stateSnap.exists()) tx.delete(stateRef);
+      tx.delete(roomRef);
+    } else {
+      const count = Number.isInteger(room.memberCount) ? room.memberCount! : (room.players?.length || 1);
+      tx.delete(memberRef);
+      tx.update(roomRef, { memberCount: Math.max(1, count - 1) });
+    }
+  });
 }
 
 export interface RoomReactionDoc {
