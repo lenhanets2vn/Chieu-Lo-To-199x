@@ -3,7 +3,7 @@
 - Giao diện người chơi không hiển thị tên dịch vụ hạ tầng, tên database, trạng thái đồng bộ kỹ thuật, tab Đồng Bộ, tên version và các lỗi raw từ backend.
 - Đăng nhập, phòng nhiều người và chat vẫn dùng backend hiện tại; KHÔNG được xóa SDK đang chạy nếu muốn giữ những tính năng này.
 - Kết nối mạng của trình duyệt và Firebase Web Config vẫn có thể được người dùng kỹ thuật xem. Đó là thiết kế công khai của Firebase Web SDK, không phải bí mật quản trị. Không đưa service-account JSON, Firebase Admin private key, secret, .env lên repository công khai.
-- Firestore Security Rules phải được triển khai vào đúng named database. Không dùng `allow read, write: if true`.
+- Firestore Security Rules phải được triển khai vào đúng database (default). Không dùng `allow read, write: if true`.
 - Xu, quyền sở hữu vật phẩm, phần thưởng hiện chưa được kiểm chứng bởi backend đáng tin cậy, vì vậy người dùng có thể sửa payload hoặc trạng thái nếu rules cho phép. Để bảo vệ thật sự cần Cloud Functions / backend giao dịch đáng tin cậy.
 - Giá trị Firebase Web Config trong file DEPLOY_ENV_VALUES.txt chỉ dành cho người triển khai. Không đưa file đó vào thư mục public.
 

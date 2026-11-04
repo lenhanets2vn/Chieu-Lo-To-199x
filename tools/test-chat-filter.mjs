@@ -20,7 +20,12 @@ function load(relative) {
 }
 
 const { maskProfanity, hasProfanity, validateAndFilterChatMessage } = load('src/features/chat/profanityFilter.ts');
-const { QUICK_REACTIONS } = load('src/features/reactions/FloatingEmoteBar.tsx');
+// Reaction chips are UI-only React components; extracting their immutable config
+// directly avoids importing React and audio into a pure Node data contract test.
+const reactionSource = fs.readFileSync(path.join(root, 'src/features/reactions/FloatingEmoteBar.tsx'), 'utf8');
+const configBlock = reactionSource.match(/export const QUICK_REACTIONS:[^=]+=[\s\S]*?\n];/);
+assert.ok(configBlock, 'Reaction configuration must remain present');
+const QUICK_REACTIONS = [...configBlock[0].matchAll(/emoji:\s*'([^']+)'/g)].map(match => ({emoji:match[1]}));
 
 // Test 1: Profanity detection & masking
 console.log('Testing profanity detection & masking...');

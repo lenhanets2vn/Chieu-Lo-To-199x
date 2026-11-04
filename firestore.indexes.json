@@ -1,4 +1,59 @@
 {
-  "indexes": [],
-  "fieldOverrides": []
+  "indexes": [
+    {
+      "collectionGroup": "rooms",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "isPrivate",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "liveVersion",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "rooms",
+      "fieldPath": "calledHistory",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "rooms",
+      "fieldPath": "roster",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "rooms",
+      "fieldPath": "winnerRow",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "rooms",
+      "fieldPath": "audioTrack",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "rooms",
+      "fieldPath": "roundId",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "rooms",
+      "fieldPath": "gameRevision",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "rooms",
+      "fieldPath": "updatedAt",
+      "indexes": []
+    }
+  ]
 }

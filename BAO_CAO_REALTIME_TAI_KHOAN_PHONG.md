@@ -41,7 +41,7 @@
 ## Triển khai
 
 1. Upload **toàn bộ source** từ ZIP mới lên GitHub, không chỉ README hoặc file ZIP.
-2. Build frontend Render Static Site/Vercel như trước; giữ chính xác `VITE_FIRESTORE_DATABASE_ID` của named database.
-3. Trên Windows giải nén source, dùng `DEPLOY_FIREBASE_CLOUD_WINDOWS.cmd` triển khai `firestore.rules` vào project đúng. File `firebase.json` đã chỉ rõ named database.
+2. Build frontend Render Static Site/Vercel như trước; giữ chính xác `VITE_FIRESTORE_DATABASE_ID` của database (default).
+3. Trên Windows giải nén source, dùng `DEPLOY_FIREBASE_CLOUD_WINDOWS.cmd` triển khai `firestore.rules` vào project đúng. File `firebase.json` đã chỉ rõ database (default).
 4. Chỉ khi frontend và rules cùng phiên bản mới có thể xác nhận luồng tạo/join; tránh dùng frontend mới với rules cũ.
 5. Kiểm tra định kỳ Firebase Console → Firestore → Usage để đo số read/write thực tế theo lượng người chơi.

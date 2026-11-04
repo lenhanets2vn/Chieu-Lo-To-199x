@@ -34,15 +34,23 @@ export function subscribeToWorldChat(
   onMessagesUpdate: (messages: ChatMessage[]) => void,
   joinedAt: Timestamp,
   onError?: (error: FirestoreError) => void,
-  onConnection?: (fromServer: boolean) => void
+  onConnection?: (fromServer: boolean) => void,
+  resumeFrom?: Timestamp
 ): () => void {
   const worldRef = collection(db, 'world_messages');
-  const q = query(worldRef, where('createdAt', '>=', joinedAt), orderBy('createdAt', 'desc'), limit(40));
+  // Retain the mandatory session lower bound for privacy Rules. On reconnect,
+  // also restrict to the newest timestamp already held in React memory.
+  const q = resumeFrom
+    ? query(worldRef, where('createdAt', '>=', joinedAt), where('createdAt', '>=', resumeFrom),
+      orderBy('createdAt', 'desc'), limit(40))
+    : query(worldRef, where('createdAt', '>=', joinedAt), orderBy('createdAt', 'desc'), limit(40));
 
   return onSnapshot(
     q, { includeMetadataChanges: true },
     (snapshot) => {
       onConnection?.(!snapshot.metadata.fromCache);
+      // Metadata-only updates are not new messages: avoid needless React renders.
+      if (snapshot.docChanges().length === 0) return;
       const msgs: ChatMessage[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
@@ -53,7 +61,8 @@ export function subscribeToWorldChat(
           characterId: data.characterId || 'chi_ba',
           avatar: data.avatar,
           text: data.text || '',
-          timestamp: typeof data.timestamp === 'number' ? data.timestamp : (data.timestamp?.toMillis?.() || Date.now()),
+          createdAt: data.createdAt instanceof Timestamp ? data.createdAt : undefined,
+          timestamp: data.createdAt?.toMillis?.() || (typeof data.timestamp === 'number' ? data.timestamp : Date.now()),
           channel: 'world',
           isBuzz: data.isBuzz || false,
           isVipEmoji: typeof data.isVipEmoji === 'string' ? data.isVipEmoji : undefined
@@ -90,7 +99,7 @@ export async function sendWorldChatMessage(
       senderId: sender.id,
       senderName: sender.name,
       characterId: sender.characterId,
-      avatar: sender.avatar || '',
+      avatar: sender.avatar && !sender.avatar.startsWith('data:') ? sender.avatar.slice(0, 2048) : '',
       text: renderChatEmojiCodes(filter.filteredText),
       timestamp: Date.now(),
       channel: 'world',
@@ -116,16 +125,22 @@ export function subscribeToRoomChat(
   onMessagesUpdate: (messages: ChatMessage[]) => void,
   joinedAt: Timestamp,
   onError?: (error: FirestoreError) => void,
-  onConnection?: (fromServer: boolean) => void
+  onConnection?: (fromServer: boolean) => void,
+  resumeFrom?: Timestamp
 ): () => void {
   if (!roomId) return () => {};
   const roomMsgRef = collection(db, 'rooms', roomId, 'messages');
-  const q = query(roomMsgRef, where('createdAt', '>=', joinedAt), orderBy('createdAt', 'desc'), limit(40));
+  const q = resumeFrom
+    ? query(roomMsgRef, where('createdAt', '>=', joinedAt), where('createdAt', '>=', resumeFrom),
+      orderBy('createdAt', 'desc'), limit(40))
+    : query(roomMsgRef, where('createdAt', '>=', joinedAt), orderBy('createdAt', 'desc'), limit(40));
 
   return onSnapshot(
     q, { includeMetadataChanges: true },
     (snapshot) => {
       onConnection?.(!snapshot.metadata.fromCache);
+      // Metadata-only updates are not new messages: avoid needless React renders.
+      if (snapshot.docChanges().length === 0) return;
       const msgs: ChatMessage[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
@@ -136,7 +151,8 @@ export function subscribeToRoomChat(
           characterId: data.characterId || 'cu_teo',
           avatar: data.avatar,
           text: data.text || '',
-          timestamp: typeof data.timestamp === 'number' ? data.timestamp : (data.timestamp?.toMillis?.() || Date.now()),
+          createdAt: data.createdAt instanceof Timestamp ? data.createdAt : undefined,
+          timestamp: data.createdAt?.toMillis?.() || (typeof data.timestamp === 'number' ? data.timestamp : Date.now()),
           channel: 'room',
           isBuzz: data.isBuzz || false,
           isVipEmoji: typeof data.isVipEmoji === 'string' ? data.isVipEmoji : undefined
@@ -173,7 +189,7 @@ export async function sendRoomChatMessage(
       senderId: sender.id,
       senderName: sender.name,
       characterId: sender.characterId,
-      avatar: sender.avatar || '',
+      avatar: sender.avatar && !sender.avatar.startsWith('data:') ? sender.avatar.slice(0, 2048) : '',
       text: renderChatEmojiCodes(filter.filteredText),
       timestamp: Date.now(),
       channel: 'room',

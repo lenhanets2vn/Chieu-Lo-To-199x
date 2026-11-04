@@ -43,8 +43,7 @@ import {
 import {
   createOnlineRoom,
   subscribeToPublicRooms,
-  subscribeToRoom,
-  subscribeToRoomGameState,
+  subscribeToLiveRoom,
   subscribeToRoomMembers,
   subscribeToOwnRoomMember,
   publishRoomGameState,
@@ -64,7 +63,7 @@ import {
   flushPendingProfileSync, logoutPlayer
 } from './features/auth/firebaseAuthService';
 import { auth, db } from './services/firebase';
-import { doc, getDoc, setDoc, updateDoc, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, setDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { createStarterProfile } from './features/progression/progressionStore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 
@@ -111,6 +110,10 @@ export default function App() {
   const [chatConnection, setChatConnection] = useState<{world: 'connecting'|'online'|'offline'|'error'; room: 'connecting'|'online'|'offline'|'error'}>({ world:'connecting', room:'connecting' });
   const [chatConnectionError, setChatConnectionError] = useState<{world:string|null;room:string|null}>({ world:null, room:null });
   const [worldChatJoinedAt, setWorldChatJoinedAt] = useState<Timestamp | null>(null);
+  // Opening other tabs no longer re-writes chat_sessions/{uid} every time.
+  const startedWorldChatForRef = useRef<string | null>(null);
+  const worldChatCursorRef = useRef<Timestamp | null>(null);
+  const roomChatCursorRef = useRef<{roomId:string;at:Timestamp} | null>(null);
   const [roomChatJoinedAt, setRoomChatJoinedAt] = useState<{roomId:string;since:Timestamp} | null>(null);
   const legacyMemberMigratedRef = useRef<Set<string>>(new Set());
   const handledInviteRef = useRef<string | null>(null);
@@ -185,8 +188,7 @@ export default function App() {
   const startRequestPendingRef = useRef(false);
   const pendingHostTakeoverRef = useRef(false);
   const remoteWinnerKeyRef = useRef('');
-  const pendingKinhClaimsRef = useRef<Array<{senderId:string;numbers:number[]}>>([]);
-  const validateKinhClaimRef = useRef<((claim: {senderId:string;numbers:number[]}) => boolean) | null>(null);
+  const validateKinhClaimRef = useRef<((claim: {senderId:string;numbers:number[];roundId:string}) => boolean) | null>(null);
   const kinClaimPendingRef = useRef(false);
   const startSongForNextBallRef = useRef<((forcedNumber?:number)=>void) | null>(null);
   const phaseRef = useRef<'intro'|'song'|'near_end'|'outro'|'idle'>('idle');
@@ -441,24 +443,35 @@ export default function App() {
     return () => unsubPublicRooms();
   }, [isRoomModalOpen, readyUserId, pageVisible]);
 
-  // One session start per authenticated page open, never a recurring heartbeat.
-  // The server timestamp is also required by Firestore Rules for chat history access.
+  // Delay world-chat session write until the player actually opens the channel.
+  // No more silent write + read for a user who only plays and leaves chat closed.
   useEffect(() => {
-    setWorldChatJoinedAt(null);
-    setMessages(previous => previous.filter(message => message.channel !== 'world'));
-    if (!readyUserId) return;
-    let active = true;
+    if (!readyUserId) {
+      startedWorldChatForRef.current = null;
+      worldChatCursorRef.current = null;
+      setWorldChatJoinedAt(null);
+      setMessages(previous => previous.filter(message => message.channel !== 'world'));
+      return;
+    }
+    const wantsChat = isWorldChatOpen || (currentView === 'GAME_MATCH' && !currentRoom && matchRightTab === 'chat');
+    if (startedWorldChatForRef.current && startedWorldChatForRef.current !== readyUserId) {
+      worldChatCursorRef.current = null;
+      setWorldChatJoinedAt(null);
+      setMessages(previous => previous.filter(message => message.channel !== 'world'));
+    }
+    if (!wantsChat || startedWorldChatForRef.current === readyUserId) return;
+    startedWorldChatForRef.current = readyUserId;
     beginWorldChatSession(readyUserId).then(joinedAt => {
-      if (!active) return;
+      if (auth.currentUser?.uid !== readyUserId) return;
       setWorldChatJoinedAt(joinedAt);
       setChatConnectionError(previous => ({ ...previous, world: null }));
     }).catch(() => {
-      if (!active) return;
+      if (auth.currentUser?.uid !== readyUserId) return;
+      startedWorldChatForRef.current = null;
       setChatConnection(previous => ({ ...previous, world: 'error' }));
-      setChatConnectionError(previous => ({ ...previous, world: 'Không bắt đầu được trò chuyện. Hãy thử tải lại trang.' }));
+      setChatConnectionError(previous => ({ ...previous, world: 'Không bắt đầu được trò chuyện. Hãy thử mở lại kênh.' }));
     });
-    return () => { active = false; };
-  }, [readyUserId]);
+  }, [readyUserId, isWorldChatOpen, currentView, currentRoom?.id, matchRightTab]);
 
   // Subscribe to real-time World chat from Firestore
   useEffect(() => {
@@ -469,9 +482,17 @@ export default function App() {
     setChatConnectionError(previous => ({...previous, world:null}));
     const unsubWorld = subscribeToWorldChat((worldMsgs) => {
       consumeVipChatEffects(worldMsgs, 'world');
+      for (const message of worldMsgs) {
+        if (message.createdAt && (!worldChatCursorRef.current ||
+            message.createdAt.toMillis() > worldChatCursorRef.current.toMillis())) {
+          worldChatCursorRef.current = message.createdAt;
+        }
+      }
       setMessages(prev => {
-        const nonWorld = prev.filter(m => m.channel !== 'world');
-        return [...nonWorld, ...worldMsgs].sort((a, b) => a.timestamp - b.timestamp);
+        const existing = prev.filter(m => m.channel === 'world');
+        const unique = new Map([...existing, ...worldMsgs].map(message => [message.id, message] as const));
+        const tail = [...unique.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-40);
+        return [...prev.filter(m => m.channel !== 'world'), ...tail].sort((a,b) => a.timestamp - b.timestamp);
       });
     }, worldChatJoinedAt, error => {
       setChatConnection(previous => ({...previous, world:'error'}));
@@ -479,7 +500,7 @@ export default function App() {
     }, fromServer => {
       setChatConnection(previous => ({...previous, world:fromServer?'online':'offline'}));
       if (fromServer) setChatConnectionError(previous => ({...previous, world:null}));
-    });
+    }, worldChatCursorRef.current ?? undefined);
     return () => unsubWorld();
   }, [currentView, currentRoom?.id, matchRightTab, isWorldChatOpen, readyUserId, worldChatJoinedAt, pageVisible, consumeVipChatEffects]);
 
@@ -489,12 +510,12 @@ export default function App() {
     if (!currentRoom?.id) return;
     const roomId = currentRoom.id;
     setRoomChatJoinedAt(null);
-    pendingKinhClaimsRef.current = [];
+    roomChatCursorRef.current = null;
     latestRoomStateRef.current = null;
     pendingHostTakeoverRef.current = false;
     lastRemoteAudioKeyRef.current = '';
     setMessages(previous => previous.filter(message => message.channel !== 'room'));
-    const unsubRoom = subscribeToRoom(roomId, updated => {
+    const unsubLive = subscribeToLiveRoom(roomId, updated => {
       if (!updated) {
         speechCaller.stop();
         activeRoomRef.current = null; rosterRoomIdRef.current = null;
@@ -504,27 +525,21 @@ export default function App() {
       const becomesHost = !wasHost && updated.hostId === auth.currentUser?.uid;
       activeRoomRef.current = updated;
       setCurrentRoom(updated);
+      if (updated.roster && rosterRoomIdRef.current !== roomId) {
+        // Public scoreboard list is embedded in the live room, but NEVER tickets.
+        const summary = Object.entries(updated.roster).map(([id, info]) => ({
+          id, name: info.name, characterId: info.characterId,
+          isHost: updated.hostId === id, isBot: false, tickets: [],
+          isReady: true, hasKinh: false, score: 0
+        } as PlayerState));
+        playersRef.current = summary;
+        setPlayers(summary);
+      }
       if (becomesHost) {
         if (latestRoomStateRef.current) takeoverHostRef.current?.(latestRoomStateRef.current);
         else pendingHostTakeoverRef.current = true;
       }
-    });
-    // One-document listener for each guest. The full 100-member query is opened
-    // separately only for the HOST or when the player explicitly views the roster.
-    const unsubOwn = subscribeToOwnRoomMember(roomId, profile.id, own => {
-      if (!own) return;
-      if (own.joinedAt instanceof Timestamp) {
-        setRoomChatJoinedAt(previous => previous?.roomId === roomId && previous.since.isEqual(own.joinedAt!)
-          ? previous : { roomId, since: own.joinedAt! });
-      } else if (!legacyMemberMigratedRef.current.has(roomId)) {
-        legacyMemberMigratedRef.current.add(roomId);
-        void ensureRoomChatJoinTime(roomId, profile.id).catch(() => {
-          setChatConnection(previous => ({ ...previous, room: 'error' }));
-          setChatConnectionError(previous => ({ ...previous, room: 'Không mở được phiên trò chuyện trong phòng.' }));
-        });
-      }
-    }, error => console.warn('Không tải được thành viên của bạn:', error.code));
-    const unsubState = subscribeToRoomGameState(roomId, state => {
+    }, state => {
       latestRoomStateRef.current = state;
       if (activeRoomRef.current?.hostId === auth.currentUser?.uid) {
         if (pendingHostTakeoverRef.current) {
@@ -546,7 +561,6 @@ export default function App() {
           marked: cell.value !== null && history.includes(cell.value) }))
       ) })));
       if (state.status === 'COUNTDOWN' && !selectionLockedRef.current && typeof state.countdownEndsAt === 'number') {
-        // At the deadline, generate a ticket only for this authenticated player.
         if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current);
         autoTicketTimerRef.current = setTimeout(() => {
           if (!selectionLockedRef.current) finalizeOnCountdownRef.current?.();
@@ -558,8 +572,6 @@ export default function App() {
       } else if (state.status !== 'COUNTDOWN') setStartCountdownLeft(null);
       gameStatusRef.current = state.status;
       setGameState(state.status);
-      // Background tabs may miss the countdown timer; issue one catch-up ticket
-      // when CALLING arrives, never a per-number write.
       if (state.status === 'CALLING' && !selectionLockedRef.current) {
         finalizeOnCountdownRef.current?.();
       }
@@ -583,28 +595,39 @@ export default function App() {
       } else if (state.status === 'GAME_OVER' && !state.winnerPlayerName) {
         setNoWinnerEnding(true);
       }
-    }, err => console.warn('Không nạp được trạng thái online:', err.code));
-    return () => { if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current); unsubRoom(); unsubOwn(); unsubState(); };
+    }, err => console.warn('Không tải được phòng realtime:', err.code));
+    // One-document listener for the room. Each guest also follows only his own
+    // membership; the HOST fetches the full roster only upon opening Players.
+    const unsubOwn = subscribeToOwnRoomMember(roomId, profile.id, own => {
+      if (!own) return;
+      if (own.joinedAt instanceof Timestamp) {
+        setRoomChatJoinedAt(previous => previous?.roomId === roomId && previous.since.isEqual(own.joinedAt!)
+          ? previous : { roomId, since: own.joinedAt! });
+      } else if (!legacyMemberMigratedRef.current.has(roomId)) {
+        legacyMemberMigratedRef.current.add(roomId);
+        void ensureRoomChatJoinTime(roomId, profile.id).catch(() => {
+          setChatConnection(previous => ({ ...previous, room: 'error' }));
+          setChatConnectionError(previous => ({ ...previous, room: 'Không mở được phiên trò chuyện trong phòng.' }));
+        });
+      }
+    }, error => console.warn('Không tải được thành viên của bạn:', error.code));
+    return () => { if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current); unsubLive(); unsubOwn(); };
   }, [currentRoom?.id, profile.id]);
 
   useEffect(() => {
     const room = currentRoom;
     if (!room || currentView !== 'GAME_MATCH') return;
-    // Host must validate KINH against tickets; guests need roster only while
-    // the players panel is open. This prevents N x 100 initial reads per lobby.
-    if (room.hostId !== profile.id && (!pageVisible || matchRightTab !== 'players')) return;
-    return subscribeToRoomMembers(room.id, members => {
+    // Public roster is already in rooms/{id}. Full ticket list is requested only
+    // when opening the players panel, NOT automatically by HOST every round.
+    if (!pageVisible || matchRightTab !== 'players' || room.hostId !== profile.id) return;
+    const stopMembers = subscribeToRoomMembers(room.id, members => {
       rosterRoomIdRef.current = room.id;
       playersRef.current = members;
       setPlayers(members);
-      if (room.hostId === auth.currentUser?.uid && pendingKinhClaimsRef.current.length) {
-        const pending = pendingKinhClaimsRef.current;
-        pendingKinhClaimsRef.current = [];
-        for (const claim of pending) {
-          if (!validateKinhClaimRef.current?.(claim)) pendingKinhClaimsRef.current.push(claim);
-        }
-      }
+      // KINH verification reads the specific claimant on demand (1 read),
+      // not all 100 member documents on every new game.
     }, error => console.warn('Không tải được danh sách phòng:', error.code));
+    return () => { stopMembers(); rosterRoomIdRef.current = null; };
   }, [currentRoom?.id, currentRoom?.hostId, profile.id, currentView, matchRightTab, pageVisible]);
 
   // Chat has its own visibility-scoped listener, disconnected without affecting gameplay.
@@ -614,15 +637,26 @@ export default function App() {
     setChatConnectionError(previous => ({...previous, room:null}));
     return subscribeToRoomChat(currentRoom.id, roomMsgs => {
       consumeVipChatEffects(roomMsgs, 'room', currentRoom.id);
-      setMessages(prev => [...prev.filter(m => m.channel !== 'room'), ...roomMsgs]
-        .sort((a, b) => a.timestamp - b.timestamp));
+      for (const message of roomMsgs) {
+        if (message.createdAt && (!roomChatCursorRef.current || roomChatCursorRef.current.roomId !== currentRoom.id ||
+            message.createdAt.toMillis() > roomChatCursorRef.current.at.toMillis())) {
+          roomChatCursorRef.current = {roomId:currentRoom.id, at:message.createdAt};
+        }
+      }
+      setMessages(prev => {
+        const old = prev.filter(m => m.channel === 'room');
+        const unique = new Map([...old, ...roomMsgs].map(message => [message.id, message] as const));
+        return [...prev.filter(m => m.channel !== 'room'),
+          ...[...unique.values()].sort((a,b) => a.timestamp - b.timestamp).slice(-40)]
+          .sort((a,b) => a.timestamp - b.timestamp);
+      });
     }, roomChatJoinedAt.since, error => {
       setChatConnection(previous => ({...previous, room:'error'}));
       setChatConnectionError(previous => ({...previous, room:'Không tải được tin nhắn trong phòng.'}));
     }, fromServer => {
       setChatConnection(previous => ({...previous, room:fromServer?'online':'offline'}));
       if (fromServer) setChatConnectionError(previous => ({...previous, room:null}));
-    });
+    }, roomChatCursorRef.current?.roomId === currentRoom.id ? roomChatCursorRef.current.at : undefined);
   }, [readyUserId, pageVisible, isWorldChatOpen, currentRoom?.id, roomChatJoinedAt, currentView, matchRightTab, consumeVipChatEffects]);
 
   useEffect(() => {
@@ -634,29 +668,32 @@ export default function App() {
     });
   }, [currentRoom?.id, currentView, pageVisible, gameState, addFloatingEmote]);
 
-  // A KINH claim may arrive at the new HOST before the 100-member roster.
-  // Retain it until the roster snapshot arrives rather than silently discarding it.
+  // Verify a KINH claim against the specific member document from the server.
+  // Avoid subscribing to 100 private tickets just to validate one claimant.
   validateKinhClaimRef.current = claim => {
-    if (gameStatusRef.current !== 'CALLING') return true;
-    const member = playersRef.current.find(p => p.id === claim.senderId);
-    if (!member || !member.tickets?.length) return false;
-    if (member.isBot) return true;
-    const calledSet = new Set(calledHistoryRef.current);
-    const won = member.tickets.some(ticket => ticket.grid.some(row => {
-      const chosen = row.map(cell => cell.value).filter((n): n is number => n !== null);
-      return chosen.length === 5 && chosen.every(n => calledSet.has(n))
-        && chosen.every(n => claim.numbers.includes(n)) && claim.numbers.every(n => chosen.includes(n));
-    }));
-    if (won) handleGameOverRef.current?.(member.name, member.id === profile.id, claim.numbers);
+    const roomId = activeRoomRef.current?.id;
+    if (!roomId || activeRoomRef.current?.hostId !== auth.currentUser?.uid || gameStatusRef.current !== 'CALLING') return true;
+    if (!claim.roundId || claim.roundId !== latestRoomStateRef.current?.roundId) return true;
+    void getDocFromServer(doc(db, 'rooms', roomId, 'members', claim.senderId)).then(memberDoc => {
+      if (!memberDoc.exists() || gameStatusRef.current !== 'CALLING' ||
+          activeRoomRef.current?.hostId !== auth.currentUser?.uid ||
+          claim.roundId !== latestRoomStateRef.current?.roundId) return;
+      const member = memberDoc.data() as PlayerState;
+      if (member.isBot || member.id !== claim.senderId || !member.tickets?.length) return;
+      const calledSet = new Set(calledHistoryRef.current);
+      const won = member.tickets.some(ticket => ticket.grid.some(row => {
+        const chosen = row.map(cell => cell.value).filter((n): n is number => n !== null);
+        return chosen.length === 5 && chosen.every(n => calledSet.has(n))
+          && chosen.every(n => claim.numbers.includes(n)) && claim.numbers.every(n => chosen.includes(n));
+      }));
+      if (won) handleGameOverRef.current?.(member.name, member.id === auth.currentUser?.uid, claim.numbers);
+    }).catch(error => console.warn('Không xác minh được vé KINH:', error));
     return true;
   };
   useEffect(() => {
     if (!currentRoom?.id || currentRoom.hostId !== profile.id || gameState !== 'CALLING') return;
     return subscribeToRoomKinhClaims(currentRoom.id, claim => {
-      if (!validateKinhClaimRef.current?.(claim)) {
-        pendingKinhClaimsRef.current.push(claim);
-        if (pendingKinhClaimsRef.current.length > 20) pendingKinhClaimsRef.current.shift();
-      }
+      validateKinhClaimRef.current?.(claim);
     });
   }, [currentRoom?.id, currentRoom?.hostId, profile.id, gameState]);
 
@@ -1432,7 +1469,8 @@ export default function App() {
       if (liveRoom && liveRoom.hostId !== auth.currentUser?.uid) {
         if (kinClaimPendingRef.current) return;
         kinClaimPendingRef.current = true;
-        void sendRoomKinhClaim(liveRoom.id, profile.id, winningRowNums)
+        void sendRoomKinhClaim(liveRoom.id, profile.id, winningRowNums,
+          latestRoomStateRef.current?.roundId || '')
           .catch(error => { kinClaimPendingRef.current = false; alert(`Không gửi được KINH đến chủ phòng: ${String(error)}`); });
       } else {
         handleGameOver(profile.displayName, true, winningRowNums);

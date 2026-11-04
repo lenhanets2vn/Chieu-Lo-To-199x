@@ -14,10 +14,10 @@
 
 ## Việc bắt buộc làm trên Firebase Console (bản source KHÔNG tự triển khai Cloud)
 
-- Kiểm tra project **`leafy-concept-qt8c4`**, chọn đúng Firestore **named database** `ai-studio-lthich199xlthoin-2cb02316-a219-47a4-9acb-21d18684e2a5` (không phải `(default)`).
+- Kiểm tra project **`loto-83a1a`**, chọn đúng Firestore **database (default)** `(default)` (là `(default)`).
 - Authentication → Sign-in method → bật **Email/Password**. Anonymous không cần bật và sẽ bị từ chối ở Firestore Rules mới.
 - Authentication → Settings → Authorized domains → thêm đúng tên domain Render/Vercel (không thêm `https://`).
-- Triển khai `firestore.rules` và `firestore.indexes.json` vào database có tên trên: mở CMD tại thư mục source, cài `firebase-tools`, đăng nhập và chạy `firebase deploy --only firestore --project leafy-concept-qt8c4`. Có thể dùng `DEPLOY_FIREBASE_CLOUD_WINDOWS.cmd`.
+- Triển khai `firestore.rules` và `firestore.indexes.json` vào database mặc định trên: mở CMD tại thư mục source, cài `firebase-tools`, đăng nhập và chạy `firebase deploy --only firestore --project loto-83a1a`. Có thể dùng `DEPLOY_FIREBASE_CLOUD_WINDOWS.cmd`.
 - Trên Render/Vercel nhập đủ `VITE_FIREBASE_*` và `VITE_FIRESTORE_DATABASE_ID` theo `DEPLOY_ENV_VALUES.txt`; bảo đảm **hai máy người chơi truy cập cùng một site/project/database**, không phải hai Firebase projects khác nhau.
 - Redeploy frontend sau khi thay biến môi trường; deploy frontend không tự deploy Firestore Rules.
 - Kiểm tra 2 tài khoản Email/Password độc lập vào cùng kênh thế giới/chiếu hội; trạng thái đọc từ server hiện **● Cloud** khi listener kết nối thành công.

@@ -10,7 +10,7 @@
 6. Bộ chọn emoji chèn **Unicode thật** và hiển thị biểu tượng kèm tên; tin nhắn cũ chứa mã `:)`, `:x`, `=))`, `:(`... được chuyển khi hiển thị. Không dùng HTML nguy hiểm.
 7. Chống spam kênh Thế Giới và kênh Phòng được theo dõi riêng để không chặn nhầm tin vừa gửi sang kênh kia.
 8. Realtime giới hạn tối đa 40 tin/kênh, chỉ bật listener khi xem đúng chat; tạm ngắt khi tab trình duyệt bị ẩn. Không tạo thêm vòng polling. Việc đăng nhập tạo một lần ghi và một lần đọc timestamp từ máy chủ để xác định mốc riêng tư.
-9. Thêm Cloud Function v2 theo sự kiện xóa phòng (database đặt tên riêng): `cleanupClosedRoom`, xóa tài liệu con tồn dư dưới phòng. Cần triển khai độc lập trên Firebase bằng tài khoản có quyền; frontend không thể tự chạy function.
+9. Thêm Cloud Function v2 theo sự kiện xóa phòng (database mặc định): `cleanupClosedRoom`, xóa tài liệu con tồn dư dưới phòng. Cần triển khai độc lập trên Firebase bằng tài khoản có quyền; frontend không thể tự chạy function.
 
 ## Chưa xác nhận / giới hạn
 
@@ -23,6 +23,6 @@
 ## Bắt buộc triển khai đồng bộ
 
 1. Upload mã nguồn frontend mới lên GitHub và redeploy Render/Vercel.
-2. Chạy `DEPLOY_CHAT_CLOUD_WINDOWS.cmd` trong thư mục Full Source (cần Firebase CLI, đăng nhập Firebase, quyền triển khai và billing cho Functions) hoặc ít nhất triển khai Firestore Rules mới bằng `firebase deploy --only firestore:rules --project leafy-concept-qt8c4`.
-3. Đảm bảo cả phần frontend và Rules dùng database `ai-studio-lthich199xlthoin-2cb02316-a219-47a4-9acb-21d18684e2a5`.
+2. Chạy `DEPLOY_CHAT_CLOUD_WINDOWS.cmd` trong thư mục Full Source (cần Firebase CLI, đăng nhập Firebase, quyền triển khai và billing cho Functions) hoặc ít nhất triển khai Firestore Rules mới bằng `firebase deploy --only firestore:rules --project loto-83a1a`.
+3. Đảm bảo cả phần frontend và Rules dùng database `(default)`.
 4. Không bật Rules mở toàn bộ để khắc phục lỗi cấp quyền.

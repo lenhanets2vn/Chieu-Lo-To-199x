@@ -1,0 +1,14 @@
+LO TO 199x — FIRESTORE RULES / GAME REALTIME
+
+Project: loto-83a1a
+Database: (default)
+
+1. Giai nen bo cong cu.
+2. Kiem tra Firebase CLI: firebase --version
+3. Dang nhap tai khoan co quyen: firebase login
+4. Chay DEPLOY_FIREBASE_CLOUD_WINDOWS.cmd (Windows).
+5. Hoac chay: firebase deploy --only firestore:rules --project loto-83a1a
+6. Redeploy frontend tu Full Source moi tren Render/Vercel.
+
+KHONG su dung Rules allow read,write: if true.
+Rules kit khong tu deploy, can tai khoan co quyen IAM/Firebase Rules.

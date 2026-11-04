@@ -43,15 +43,15 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo [3/3] Trien khai chi Firestore Security Rules...
-call firebase deploy --only firestore:rules --project "%PROJECT_ID%"
+echo [3/3] Trien khai Firestore Rules VA composite indexes...
+call firebase deploy --only firestore --project "%PROJECT_ID%"
 if errorlevel 1 (
   echo [LOI] Deploy that bai. Kiem tra quy tac va quyen truy cap Firebase.
   pause
   exit /b 1
 )
 echo.
-echo [OK] Lenh deploy rules thanh cong. Cap nhat frontend tren Render/Vercel cung ban.
+echo [OK] Lenh deploy rules va indexes thanh cong. Cap nhat frontend tren Render/Vercel cung ban.
 echo Luu y: giao dich tao/join phong CAN rules moi, khong su dung code va rules lech phien ban.
 pause
 endlocal

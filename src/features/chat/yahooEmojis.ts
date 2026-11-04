@@ -39,6 +39,8 @@ export interface ChatMessage {
   avatar?: string;
   text: string;
   timestamp: number;
+  /** Server timestamp, used for incremental listener reconnections. */
+  createdAt?: import('firebase/firestore').Timestamp;
   channel: 'room' | 'world' | 'system';
   isBuzz?: boolean;
   isVipEmoji?: string;

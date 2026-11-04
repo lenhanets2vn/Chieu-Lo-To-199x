@@ -1,7 +1,7 @@
 import {
   collection, doc, updateDoc, query, where,
   limit, orderBy, onSnapshot, addDoc, serverTimestamp, runTransaction,
-  FirestoreError, writeBatch, getDocFromServer, getDocs, Timestamp
+  FirestoreError, writeBatch, getDocFromServer, getDocs, Timestamp, increment, setDoc
 } from 'firebase/firestore';
 import { db, auth } from '../../services/firebase';
 import { GameRoom } from './types';
@@ -32,7 +32,9 @@ export interface LiveRoomGame {
   roundId?: string;
 }
 
-/** Create a room and its small separate live-state document. */
+/** One live room document: game + public roster summary + lobby metadata.
+ * Private tickets remain in members/{uid}; they must never be copied into the shared document.
+ */
 export async function createOnlineRoom(
   params: { name: string; isPrivate: boolean; password?: string; callSpeed: number; maxPlayers: number },
   hostPlayer: PlayerState
@@ -47,10 +49,16 @@ export async function createOnlineRoom(
     name: params.name.trim().slice(0, 70) || 'Chiếu Lô Tô Hội Xuân 199x',
     isPrivate: params.isPrivate,
     hostId: hostPlayer.id,
-    hostName: hostPlayer.name,
+    hostName: hostPlayer.name.slice(0, 48),
     maxPlayers: Math.min(100, Math.max(2, params.maxPlayers || 30)),
-    players: [hostPlayer], // compatibility: roster is now stored in rooms/{id}/members
+    players: [{ id: hostPlayer.id, name: hostPlayer.name.slice(0, 48),
+      characterId: hostPlayer.characterId, isHost: true, isBot: false, tickets: [],
+      isReady: false, hasKinh: false, score: 0 }], // minimal compatibility snapshot, not the roster
+    roster: { [hostPlayer.id]: { name: hostPlayer.name.slice(0, 48), characterId: hostPlayer.characterId } },
     memberCount: 1,
+    liveVersion: 2,
+    gameRevision: 0,
+    audioPhase: 'idle',
     status: 'WAITING',
     currentBallNumber: null,
     calledHistory: [],
@@ -58,16 +66,12 @@ export async function createOnlineRoom(
     maxNumber: 90,
     createdAt: Date.now()
   };
-  // All three documents are created together; never leave an unjoinable room.
+  // Atomic creation: 1 room + 1 private member; no third game-state document.
   const roomRef = doc(db, 'rooms', room.id);
   const memberRef = doc(db, 'rooms', room.id, 'members', hostPlayer.id);
-  const stateRef = doc(db, 'rooms', room.id, 'state', 'current');
   const batch = writeBatch(db);
-  batch.set(roomRef, room);
-  batch.set(memberRef, { ...hostPlayer, tickets: [], isBot: false, joinedAt: serverTimestamp() });
-  batch.set(stateRef, {
-    status: 'WAITING', currentBallNumber: null, calledHistory: [], audioPhase: 'idle', updatedAt: serverTimestamp()
-  });
+  batch.set(roomRef, { ...room, updatedAt: serverTimestamp() });
+  batch.set(memberRef, { ...hostPlayer, name: hostPlayer.name.slice(0, 48), tickets: [], isBot: false, joinedAt: serverTimestamp() });
   try {
     await batch.commit();
   } catch (error) {
@@ -86,67 +90,76 @@ export function subscribeToPublicRooms(
   onError?: (error: FirestoreError) => void,
   onConnection?: (fromServer: boolean) => void
 ): () => void {
-  const q = query(collection(db, 'rooms'), where('isPrivate', '==', false), limit(20));
+  // Lobby must NOT listen to rooms while balls/music are being published.
+  // Only waiting, joinable public rooms enter this query.
+  const q = query(collection(db, 'rooms'), where('isPrivate', '==', false),
+    where('status', '==', 'WAITING'), where('liveVersion', '==', 2), limit(20));
   return onSnapshot(q, { includeMetadataChanges: true }, snapshot => {
     onConnection?.(!snapshot.metadata.fromCache);
     onRoomsUpdate(snapshot.docs.map(d => d.data() as GameRoom).sort((a,b) => b.createdAt - a.createdAt));
   }, err => onError?.(err));
 }
 
-export function subscribeToRoom(roomId: string, onRoomUpdate: (room: GameRoom | null) => void,
-  onError?: (error: FirestoreError) => void): () => void {
+/** One onSnapshot only for room metadata, public roster and all gameplay events.
+ * Avoid duplicate listeners on rooms/{id} and rooms/{id}/state/current.
+ * Revision skips expensive game re-render when someone only joins/leaves.
+ */
+export function subscribeToLiveRoom(
+  roomId: string,
+  onRoom: (room: GameRoom | null) => void,
+  onGame: (state: LiveRoomGame) => void,
+  onError?: (error: FirestoreError) => void
+): () => void {
   if (!roomId) return () => {};
-  return onSnapshot(doc(db, 'rooms', roomId), snap => {
-    onRoomUpdate(snap.exists() ? snap.data() as GameRoom : null);
+  let lastMetadata = '';
+  let lastGameRevision: number | null = null;
+  return onSnapshot(doc(db, 'rooms', roomId), snapshot => {
+    if (!snapshot.exists()) { onRoom(null); return; }
+    const room = snapshot.data() as GameRoom;
+    const metaKey = JSON.stringify([room.hostId, room.hostName, room.name, room.status,
+      room.memberCount, room.roster]);
+    if (metaKey !== lastMetadata) {
+      lastMetadata = metaKey;
+      onRoom(room);
+    }
+    if (lastGameRevision !== room.gameRevision) {
+      lastGameRevision = room.gameRevision;
+      onGame(room as LiveRoomGame);
+    }
   }, err => onError?.(err));
 }
 
-/** Single tiny document carries the authoritative host's gameplay events. */
-export function subscribeToRoomGameState(roomId: string, onState: (state: LiveRoomGame) => void,
-  onError?: (error: FirestoreError) => void): () => void {
-  if (!roomId) return () => {};
-  return onSnapshot(doc(db, 'rooms', roomId, 'state', 'current'), snap => {
-    if (snap.exists()) onState(snap.data() as LiveRoomGame);
-  }, err => onError?.(err));
+// Serialize HOST writes per room so a song-start event cannot overtake its reveal.
+// Queue holds no timer; it clears immediately after the last actual write.
+const pendingLiveWrites = new Map<string, Promise<void>>();
+function queueLiveWrite(roomId: string, update: object): Promise<void> {
+  const previous = pendingLiveWrites.get(roomId) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(() => updateDoc(doc(db, 'rooms', roomId), {
+    ...update, updatedAt: serverTimestamp(), gameRevision: increment(1)
+  }));
+  pendingLiveWrites.set(roomId, current);
+  const clear = () => { if (pendingLiveWrites.get(roomId) === current) pendingLiveWrites.delete(roomId); };
+  current.then(clear, clear);
+  return current;
 }
 
-/** Publish only actual changes. Lobby status changes once per phase, not per ball. */
+/** One write for each meaningful gameplay transition, never a per-second tick. */
 export async function publishRoomGameState(roomId: string, update: Partial<LiveRoomGame>): Promise<void> {
   if (!roomId) return;
-  const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
-  const payload = { ...update, updatedAt: serverTimestamp() };
-  const phase = update.status;
-  if (phase === 'WAITING' || phase === 'COUNTDOWN' || phase === 'GAME_OVER') {
-    const batch = writeBatch(db);
-    batch.update(stateRef, payload);
-    batch.update(doc(db, 'rooms', roomId), { status: phase });
-    await batch.commit();
-  } else {
-    await updateDoc(stateRef, payload);
-  }
+  await queueLiveWrite(roomId, update);
 }
 
-/** Publish once when a track actually begins. No audio-position polling/writes. */
+/** Each audio event uses the SAME live document; one write per track change. */
 export async function publishRoomAudioEvent(
   roomId: string, phase: 'intro' | 'number' | 'near_end' | 'outro',
-  track: string, soundpackId: string, firstNumber: boolean = false
+  track: string, soundpackId: string, _firstNumber: boolean = false
 ): Promise<void> {
   if (!roomId) return;
   const liveStatus: GameStatus = phase === 'outro' ? 'GAME_OVER' : phase === 'intro' ? 'COUNTDOWN' : 'CALLING';
-  const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
-  const payload = {
+  await queueLiveWrite(roomId, {
     audioPhase: phase, audioTrack: track, audioStartedAt: serverTimestamp(),
-    soundpackId, status: liveStatus, updatedAt: serverTimestamp()
-  };
-  // Room cards (and joinability) switch only at first song and at game over.
-  if (firstNumber || phase === 'outro') {
-    const batch = writeBatch(db);
-    batch.update(stateRef, payload);
-    batch.update(doc(db, 'rooms', roomId), { status: liveStatus });
-    await batch.commit();
-  } else {
-    await updateDoc(stateRef, payload);
-  }
+    soundpackId, status: liveStatus
+  });
 }
 
 /** Own member state is isolated: no player may edit another player's tickets. */
@@ -192,7 +205,8 @@ export async function ensureRoomChatJoinTime(roomId: string, uid: string): Promi
 /**
  * Atomic membership join. Only a tiny memberCount changes on the room document;
  * a player's tickets/profile live solely in that player's members/{uid} document.
- * This avoids repeatedly uploading a 100-player roster on every join.
+ * This updates the 100-player public roster only when someone joins/leaves.
+ * Gameplay writes carry the same compact summary without private tickets.
  */
 export async function joinOnlineRoom(
   codeOrId: string, player: PlayerState, _passwordInput?: string
@@ -202,24 +216,22 @@ export async function joinOnlineRoom(
     const roomId = codeOrId.trim().toUpperCase();
     if (!/^LT[A-HJ-NP-Z2-9]{8,18}$/.test(roomId)) throw new Error('Mã phòng không hợp lệ. Hãy sao chép đúng mã mời.');
     const roomRef = doc(db, 'rooms', roomId);
-    const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
     const memberRef = doc(db, 'rooms', roomId, 'members', player.id);
     const result = await runTransaction(db, async tx => {
-      // All reads MUST precede all writes in a Firestore transaction.
       const roomSnap = await tx.get(roomRef);
-      const stateSnap = await tx.get(stateRef);
       const memberSnap = await tx.get(memberRef);
       if (!roomSnap.exists()) throw new Error('Phòng không tồn tại hoặc đã đóng.');
       const room = roomSnap.data() as GameRoom;
       if (!memberSnap.exists()) {
-        if (!stateSnap.exists()) throw new Error('Phòng chưa sẵn sàng. Chủ phòng cần mở lại.');
-        if (stateSnap.data().status !== 'WAITING') {
+        if (room.liveVersion !== 2) throw new Error('Phòng thuộc phiên bản cũ. Vui lòng mở phòng mới.');
+        if (room.status !== 'WAITING') {
           throw new Error('Ván đang diễn ra. Hãy chờ chủ phòng mở ván mới.');
         }
         const count = Number.isInteger(room.memberCount) ? room.memberCount! : (room.players?.length || 1);
         if (count >= room.maxPlayers) throw new Error('Phòng đã đủ người chơi.');
-        tx.set(memberRef, { ...player, tickets: [], isBot: false, isHost: room.hostId === player.id, joinedAt: serverTimestamp() });
-        tx.update(roomRef, { memberCount: count + 1 });
+        tx.set(memberRef, { ...player, name: player.name.slice(0, 48), tickets: [], isBot: false, isHost: room.hostId === player.id, joinedAt: serverTimestamp() });
+        tx.update(roomRef, { memberCount: count + 1,
+          roster: { ...room.roster, [player.id]: { name: player.name.slice(0, 48), characterId: player.characterId } } });
       }
       return room;
     });
@@ -230,6 +242,7 @@ export async function joinOnlineRoom(
     const expected = [
       'Bạn cần đăng nhập trước khi vào phòng.', 'Mã phòng không hợp lệ. Hãy sao chép đúng mã mời.',
       'Phòng không tồn tại hoặc đã đóng.', 'Phòng chưa sẵn sàng. Chủ phòng cần mở lại.',
+      'Phòng thuộc phiên bản cũ. Vui lòng mở phòng mới.',
       'Ván đang diễn ra. Hãy chờ chủ phòng mở ván mới.',
       'Phòng đã đủ người chơi.'
     ];
@@ -249,7 +262,6 @@ export async function leaveOnlineRoom(roomId: string, playerId: string, wasHost:
   if (!auth.currentUser || auth.currentUser.uid !== playerId) return;
   const roomRef = doc(db, 'rooms', roomId);
   const memberRef = doc(db, 'rooms', roomId, 'members', playerId);
-  const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
   // This small read occurs ONLY on explicit departure, never while idling.
   // A nominated successor is checked again inside the transaction to avoid races.
   const successors = wasHost
@@ -261,9 +273,11 @@ export async function leaveOnlineRoom(roomId: string, playerId: string, wasHost:
     if (!roomSnap.exists() || !memberSnap.exists()) return;
     const room = roomSnap.data() as GameRoom;
     const count = Number.isInteger(room.memberCount) ? room.memberCount! : (room.players?.length || 1);
+    const nextRoster = { ...room.roster };
+    delete nextRoster[playerId];
     if (room.hostId !== playerId) {
       tx.delete(memberRef);
-      tx.update(roomRef, { memberCount: Math.max(1, count - 1) });
+      tx.update(roomRef, { memberCount: Math.max(1, count - 1), roster: nextRoster });
       return;
     }
     if (count > 1) {
@@ -272,13 +286,12 @@ export async function leaveOnlineRoom(roomId: string, playerId: string, wasHost:
       const successor = await tx.get(successorRef);
       if (!successor.exists()) throw new Error('Người nhận HOST đã rời phòng. Hãy thử lại.');
       tx.update(successorRef, { isHost: true });
-      tx.update(roomRef, { hostId: nominated, hostName: successor.data().name || 'Chủ phòng', memberCount: count - 1 });
+      tx.update(roomRef, { hostId: nominated, hostName: successor.data().name || 'Chủ phòng',
+        memberCount: count - 1, roster: nextRoster });
       tx.delete(memberRef);
       return;
     }
-    const stateSnap = await tx.get(stateRef);
     tx.delete(memberRef);
-    if (stateSnap.exists()) tx.delete(stateRef);
     tx.delete(roomRef);
   });
 }
@@ -315,14 +328,17 @@ export function subscribeToRoomReactions(roomId: string,
 export interface RoomKinhClaim {
   senderId: string;
   numbers: number[];
+  roundId: string;
 }
-export async function sendRoomKinhClaim(roomId: string, senderId: string, numbers: number[]): Promise<void> {
+export async function sendRoomKinhClaim(roomId: string, senderId: string, numbers: number[], roundId: string): Promise<void> {
   if (!auth.currentUser || auth.currentUser.uid !== senderId) throw new Error('Chưa đăng nhập.');
   if (numbers.length !== 5 || new Set(numbers).size !== 5 || numbers.some(n => !Number.isInteger(n) || n < 1 || n > 90)) {
     throw new Error('Bộ số KINH không hợp lệ.');
   }
-  await addDoc(collection(db, 'rooms', roomId, 'claims'), {
-    senderId, numbers: [...numbers], createdAt: serverTimestamp()
+  if (!/^[0-9a-f-]{36}$/.test(roundId)) throw new Error('Chưa có mã ván hợp lệ.');
+  // A deterministic doc id prevents repeated claims by the same player/round.
+  await setDoc(doc(db, 'rooms', roomId, 'claims', `${roundId}_${senderId}`), {
+    senderId, roundId, numbers: [...numbers], createdAt: serverTimestamp()
   });
 }
 export function subscribeToRoomKinhClaims(roomId: string, onClaim: (claim: RoomKinhClaim) => void): () => void {
@@ -335,8 +351,9 @@ export function subscribeToRoomKinhClaims(roomId: string, onClaim: (claim: RoomK
       const data = change.doc.data();
       const at = data.createdAt?.toMillis?.() || 0;
       if (Date.now() - at < 10_000 && at <= Date.now() + 2_000
-          && typeof data.senderId === 'string' && Array.isArray(data.numbers)) {
-        onClaim({ senderId: data.senderId, numbers: data.numbers });
+          && typeof data.senderId === 'string' && typeof data.roundId === 'string'
+          && Array.isArray(data.numbers)) {
+        onClaim({ senderId: data.senderId, roundId: data.roundId, numbers: data.numbers });
       }
     });
   }, error => console.warn('Lỗi nhận KINH trong phòng:', error.code));
