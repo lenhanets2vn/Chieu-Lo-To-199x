@@ -1,0 +1,10 @@
+[
+  {
+    "id": "hoi-cho-199x",
+    "title": "Hò Lô Tô Hội Chợ 199x",
+    "description": "Bản gốc 90 bài hò, nhạc dạo, gần kết và kết thúc.",
+    "basePath": "soundpack",
+    "maxNumber": 90,
+    "preferredFormats": ["mp3", "webm"]
+  }
+]

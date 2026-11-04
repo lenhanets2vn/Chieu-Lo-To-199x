@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me(uid) { return signedIn() && request.auth.uid == uid; }
+    function smallText(text, max) { return text is string && text.size() > 0 && text.size() <= max; }
+    function isHost(roomId) {
+      return signedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
+    }
+    function isMember(roomId) {
+      return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+    match /users/{uid} {
+      allow get: if me(uid);
+      allow list: if false;
+      allow create, update: if me(uid) && !('password' in request.resource.data)
+        && request.resource.data.id == uid
+        && request.resource.data.keys().hasOnly([
+          'id','username','displayName','yahooTitle','characterId','level',
+          'currentExp','coins','totalGames','totalWins','activeMarkerId',
+          'activeTicketSkinId','activeThemeId','activeFrameId','unlockedItemIds',
+          'lastDailySpinTime','updatedAt'
+        ]);
+      allow delete: if false;
+    }
+    match /users/{uid}/spinClaims/{dayKey} {
+      allow get: if me(uid);
+      allow list: if false;
+      allow create: if me(uid) && dayKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.keys().hasOnly(['createdAt'])
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+    match /rooms/{roomId} {
+      allow get: if signedIn();
+      allow list: if signedIn() && resource.data.isPrivate == false
+        && request.query.limit <= 20;
+      allow create: if signedIn()
+        && request.resource.data.id == roomId
+        && request.resource.data.code == roomId
+        && request.resource.data.hostId == request.auth.uid
+        && request.resource.data.players.size() == 1
+        && request.resource.data.players[0].id == request.auth.uid
+        && request.resource.data.maxPlayers >= 2 && request.resource.data.maxPlayers <= 30
+        && request.resource.data.status == 'WAITING'
+        && smallText(request.resource.data.name, 70)
+        && !('password' in request.resource.data);
+      // Joiners can ONLY append their own profile to the roster. Existing profiles cannot change.
+      allow update: if signedIn() && (
+        (resource.data.hostId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players', 'hostName']))
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players'])
+          && request.resource.data.players.size() == resource.data.players.size() + 1
+          && request.resource.data.players.size() <= resource.data.maxPlayers
+          && request.resource.data.players[resource.data.players.size()].id == request.auth.uid
+          && request.resource.data.players.hasAll(resource.data.players))
+      );
+      allow delete: if signedIn() && resource.data.hostId == request.auth.uid;
+
+      match /state/{stateId} {
+        allow get: if signedIn() && stateId == 'current';
+        allow list: if false;
+        allow create: if stateId == 'current' && isHost(roomId)
+          && request.resource.data.status == 'WAITING';
+        allow update: if stateId == 'current' && isHost(roomId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status','currentBallNumber','calledHistory','winnerPlayerName','winnerRow','updatedAt'
+          ])
+          && request.resource.data.calledHistory is list
+          && request.resource.data.calledHistory.size() <= 90;
+        allow delete: if false;
+      }
+      match /members/{uid} {
+        allow get: if isMember(roomId);
+        allow list: if isMember(roomId) && request.query.limit <= 30;
+        allow create: if me(uid) && request.resource.data.id == uid
+          && request.resource.data.isBot == false
+          && request.resource.data.tickets is list && request.resource.data.tickets.size() <= 1
+          && get(/databases/$(database)/documents/rooms/$(roomId)).data.players.hasAny([request.resource.data]);
+        allow update: if me(uid) && request.resource.data.id == uid
+          && request.resource.data.isBot == false
+          && request.resource.data.tickets is list && request.resource.data.tickets.size() <= 1;
+        allow delete: if me(uid);
+      }
+      match /claims/{claimId} {
+        allow get: if isHost(roomId);
+        allow list: if isHost(roomId) && request.query.limit <= 20;
+        allow create: if isMember(roomId) && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.keys().hasOnly(['senderId','numbers','createdAt'])
+          && request.resource.data.numbers is list && request.resource.data.numbers.size() == 5
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+      match /messages/{messageId} {
+        allow get: if isMember(roomId);
+        allow list: if isMember(roomId) && request.query.limit <= 40;
+        allow create: if isMember(roomId) && request.resource.data.senderId == request.auth.uid
+          && smallText(request.resource.data.text, 500)
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+      match /reactions/{reactionId} {
+        allow get: if isMember(roomId);
+        allow list: if isMember(roomId) && request.query.limit <= 10;
+        allow create: if isMember(roomId) && request.resource.data.senderId == request.auth.uid
+          && smallText(request.resource.data.emoji, 12)
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+    match /world_messages/{messageId} {
+      allow get: if signedIn();
+      allow list: if signedIn() && request.query.limit <= 40;
+      allow create: if signedIn() && request.resource.data.senderId == request.auth.uid
+        && smallText(request.resource.data.text, 500)
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+  }
+}

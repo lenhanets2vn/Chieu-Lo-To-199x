@@ -1,0 +1,103 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile and game progression data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "displayName": { "type": "string" },
+        "characterId": { "type": "string" },
+        "coins": { "type": "number" },
+        "exp": { "type": "number" },
+        "level": { "type": "number" },
+        "activeTicketSkinId": { "type": "string" },
+        "activeThemeId": { "type": "string" },
+        "activeFrameId": { "type": "string" },
+        "unlockedItemIds": { "type": "array" },
+        "matchesPlayed": { "type": "number" },
+        "matchesWon": { "type": "number" },
+        "totalCoinsWon": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "displayName", "coins", "level"]
+    },
+    "GameRoom": {
+      "title": "GameRoom",
+      "description": "Multiplayer online game room",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "isPrivate": { "type": "boolean" },
+        "password": { "type": "string" },
+        "hostId": { "type": "string" },
+        "hostName": { "type": "string" },
+        "maxPlayers": { "type": "number" },
+        "players": { "type": "array" },
+        "status": { "type": "string" },
+        "currentBallNumber": { "type": "number" },
+        "calledHistory": { "type": "array" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "code", "name", "hostId", "status"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Chat message in World or Room channel",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "characterId": { "type": "string" },
+        "text": { "type": "string" },
+        "channel": { "type": "string" },
+        "roomId": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "isBuzz": { "type": "boolean" },
+        "isVip": { "type": "boolean" }
+      },
+      "required": ["id", "senderId", "senderName", "text", "channel", "timestamp"]
+    },
+    "FloatingReaction": {
+      "title": "FloatingReaction",
+      "description": "Real-time floating reaction emote in a match",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "emoji": { "type": "string" },
+        "label": { "type": "string" },
+        "roomId": { "type": "string" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["id", "senderId", "emoji", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "Individual player profiles and game progression"
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "GameRoom" },
+      "description": "Active game rooms for online multiplayer"
+    },
+    "/world_messages/{messageId}": {
+      "schema": { "$ref": "ChatMessage" },
+      "description": "World channel public chat messages"
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": { "$ref": "ChatMessage" },
+      "description": "In-room chat messages"
+    },
+    "/rooms/{roomId}/reactions/{reactionId}": {
+      "schema": { "$ref": "FloatingReaction" },
+      "description": "Real-time floating reaction emotes during match"
+    }
+  }
+}

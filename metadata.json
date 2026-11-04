@@ -1,0 +1,10 @@
+{
+  "name": "Lô Tô Hội Chợ 199x - Lô Tô Hoài Niệm Chuẩn 9x",
+  "description": "Website chơi Lô Tô hoài niệm thập niên 90s phong cách hội chợ truyền thống, online cùng bạn bè và offline với AI bot 30 người, âm thanh hò kêu 1-90, chat hội chiếu 9x.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
