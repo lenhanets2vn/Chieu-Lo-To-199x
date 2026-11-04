@@ -18,7 +18,7 @@ service cloud.firestore {
       allow create, update: if me(uid) && !('password' in request.resource.data)
         && request.resource.data.id == uid
         && request.resource.data.keys().hasOnly([
-          'id','username','displayName','yahooTitle','characterId','level',
+          'id','username','displayName','avatarDataUrl','yahooTitle','characterId','level',
           'currentExp','coins','totalGames','totalWins','activeMarkerId',
           'activeTicketSkinId','activeThemeId','activeFrameId','unlockedItemIds',
           'lastDailySpinTime','updatedAt'
@@ -84,7 +84,7 @@ service cloud.firestore {
           && request.resource.data.status == 'WAITING';
         allow update: if stateId == 'current' && isHost(roomId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status','currentBallNumber','calledHistory','winnerPlayerName','winnerRow','updatedAt'
+            'status','currentBallNumber','calledHistory','winnerPlayerName','winnerRow','countdownEndsAt','updatedAt'
           ])
           && request.resource.data.calledHistory is list
           && request.resource.data.calledHistory.size() <= 90;

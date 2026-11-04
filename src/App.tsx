@@ -253,7 +253,11 @@ export default function App() {
   const [selectionLocked, setSelectionLocked] = useState(false);
   const selectionLockedRef = useRef(false);
   const selectionDeadlineRef = useRef(0);
+  const startCountdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoTicketTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [startCountdownLeft, setStartCountdownLeft] = useState<number | null>(null);
   const [selectionSecondsLeft, setSelectionSecondsLeft] = useState(30);
+  const finalizeOnCountdownRef = useRef<(() => void) | null>(null);
   const [noWinnerEnding, setNoWinnerEnding] = useState(false);
   const [noWinnerReason, setNoWinnerReason] = useState<'exhausted'|'manual'>('exhausted');
   const updateAudioProgress = (_elapsed: number, _total: number) => { /* Hidden timeline: no React render per audio tick. */ };
@@ -509,13 +513,24 @@ export default function App() {
         row.map(cell => ({ ...cell, called: cell.value !== null && history.includes(cell.value),
           marked: cell.value !== null && history.includes(cell.value) }))
       ) })));
+      if (state.status === 'COUNTDOWN' && !selectionLockedRef.current && typeof state.countdownEndsAt === 'number') {
+        // At the deadline, generate a ticket only for this authenticated player.
+        if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current);
+        autoTicketTimerRef.current = setTimeout(() => {
+          if (!selectionLockedRef.current) finalizeOnCountdownRef.current?.();
+          autoTicketTimerRef.current = null;
+        }, Math.max(0, state.countdownEndsAt - Date.now()));
+      }
+      if (state.status === 'COUNTDOWN' && typeof state.countdownEndsAt === 'number') {
+        setStartCountdownLeft(Math.max(0, Math.ceil((state.countdownEndsAt - Date.now()) / 1000)));
+      } else if (state.status !== 'COUNTDOWN') setStartCountdownLeft(null);
       gameStatusRef.current = state.status;
       setGameState(state.status);
       if (state.status === 'GAME_OVER' && state.winnerPlayerName) {
         setWinnerInfo({ name: state.winnerPlayerName, isUser: state.winnerPlayerName === displayNameRef.current, rowNumbers: state.winnerRow });
       }
     }, err => console.warn('Không nạp được trạng thái online:', err.code));
-    return () => { unsubRoom(); unsubMembers(); unsubState(); };
+    return () => { if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current); unsubRoom(); unsubMembers(); unsubState(); };
   }, [currentRoom?.id]);
 
   // Chat has its own visibility-scoped listener, disconnected without affecting gameplay.
@@ -671,7 +686,7 @@ export default function App() {
   /** Chốt đúng 5 số. Nếu hết giờ, giữ số người chơi đã chọn và bốc bù số còn thiếu. */
   /** Khóa bộ vé chỉ sau khi tất cả bộ số đã đủ. Đủ 30/120 giây tự điền phần còn thiếu. */
   const finalizePacks = useCallback((sets: number[][]) => {
-    if (selectionLockedRef.current || gameStatusRef.current !== 'WAITING') return;
+    if (selectionLockedRef.current || !['WAITING', 'COUNTDOWN'].includes(gameStatusRef.current)) return;
     const complete = Array.from({ length: packCount }, (_, i) =>
       pickFiveUnique(MAX_SOUND_NUMBER, sets[i] ?? [])
     );
@@ -698,6 +713,10 @@ export default function App() {
       return updated;
     });
   }, [packCount, profile]);
+
+  useEffect(() => {
+    finalizeOnCountdownRef.current = () => finalizePacks([...chosenPacks, selectedFive]);
+  }, [finalizePacks, chosenPacks, selectedFive]);
 
   const choosePackCount = useCallback((count: 1 | 5) => {
     if (selectionLockedRef.current || gameStatusRef.current !== 'WAITING') return;
@@ -746,6 +765,7 @@ export default function App() {
   const startNewGame = useCallback((mode: 'offline_bot' | 'online_friend' = settings.mode, roomOverride?: GameRoom) => {
     const liveRoom = roomOverride || activeRoomRef.current;
     speechCaller.stop();
+    if (startCountdownTimerRef.current) clearTimeout(startCountdownTimerRef.current);
     gameStatusRef.current = 'WAITING';
     singingRef.current = false;
     phaseRef.current = 'idle';
@@ -1082,25 +1102,15 @@ export default function App() {
   }, [startSongForNextBall]);
 
   // Bắt đầu bằng NHẠC DẠO (intro.mp3), sau đó lần lượt phát soundpack các số được xáo ngẫu nhiên.
-  const handleStartGameRound = useCallback(() => {
-    if (gameStatusRef.current !== 'WAITING' || !selectionLockedRef.current) return;
-    const room = activeRoomRef.current;
-    if (room) {
-      if (room.hostId !== auth.currentUser?.uid) return;
-      if (!playersRef.current.length || playersRef.current.some(player => !player.isBot && player.tickets.length !== 1)) {
-        alert('Chưa đủ vé đã chốt của mọi người trong phòng. Hãy chờ người chơi chọn xong bộ 5 số.');
-        return;
-      }
-    }
+  const beginIntroAfterCountdown = useCallback(() => {
+    if (gameStatusRef.current !== 'COUNTDOWN') return;
+    setStartCountdownLeft(null);
     gameStatusRef.current = 'COUNTDOWN';
     phaseRef.current = 'intro';
     speechCaller.setEnabled(settings.voiceCaller);
     speechCaller.setVolume(musicVolume);
     setGameState('COUNTDOWN');
     const liveRoom = activeRoomRef.current;
-    if (liveRoom?.hostId === auth.currentUser?.uid) {
-      void publishRoomGameState(liveRoom.id, { status: 'COUNTDOWN', currentBallNumber: null, calledHistory: [] });
-    }
     setIsIntroPlaying(true);
     setAudioLabel('Đang phát nhạc mở màn...');
 
@@ -1135,6 +1145,34 @@ export default function App() {
       onError: onAudioFailure
     });
   }, [settings.voiceCaller, musicVolume, createNumberChantCallbacks]);
+
+  const handleStartGameRound = useCallback(() => {
+    if (gameStatusRef.current !== 'WAITING') return;
+    const room = activeRoomRef.current;
+    if (room && room.hostId !== auth.currentUser?.uid) return;
+    // maxPlayers is capacity, NOT a minimum start requirement.
+    // A ten-second countdown gives every connected member time to choose five numbers.
+    const endsAt = Date.now() + 10_000;
+    gameStatusRef.current = 'COUNTDOWN';
+    setGameState('COUNTDOWN');
+    setStartCountdownLeft(10);
+    setAudioLabel('Chuẩn bị vào ván · 10 giây');
+    if (room) void publishRoomGameState(room.id, {
+      status: 'COUNTDOWN', countdownEndsAt: endsAt, currentBallNumber: null, calledHistory: []
+    }).catch(error => console.warn('Không công bố được thời gian bắt đầu:', error));
+    if (startCountdownTimerRef.current) clearTimeout(startCountdownTimerRef.current);
+    startCountdownTimerRef.current = setTimeout(() => {
+      startCountdownTimerRef.current = null;
+      if (!selectionLockedRef.current) finalizeOnCountdownRef.current?.();
+      beginIntroAfterCountdown();
+    }, 10_000);
+  }, [beginIntroAfterCountdown]);
+
+  useEffect(() => {
+    if (gameState !== 'COUNTDOWN' || startCountdownLeft === null) return;
+    const timer = window.setInterval(() => setStartCountdownLeft(value => value === null ? null : Math.max(0, value - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [gameState, startCountdownLeft === null]);
 
   const handleAudioPauseToggle = () => {
     if (gameStatusRef.current === 'PAUSED') {
@@ -1582,8 +1620,8 @@ export default function App() {
             <div className="bg-[#241208] border border-amber-900/80 rounded-lg p-2.5 flex flex-wrap items-center justify-between gap-3 shadow-md">
               <div className="flex items-center gap-2.5">
                 <div className={`w-11 h-11 rounded-full overflow-hidden shrink-0 bg-stone-900 transition-all ${getFrameStyle(profile.activeFrameId)}`}>
-                  {activeChar.avatar ? (
-                    <img src={activeChar.avatar} alt={activeChar.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  {profile.avatarDataUrl || activeChar.avatar ? (
+                    <img src={profile.avatarDataUrl || activeChar.avatar} alt={activeChar.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center font-bold text-lg bg-amber-700">
                       {profile.displayName[0]}
@@ -1650,13 +1688,19 @@ export default function App() {
               voiceEnabled={settings.voiceCaller}
               onToggleVoice={handleMusicToggle}
               onStartGame={handleStartGameRound}
-              canStart={selectionLocked && (!currentRoom || (currentRoom.hostId === profile.id && players.length > 0 && players.every(p => p.isBot || p.tickets.length === 1)))}
+              canStart={!currentRoom || currentRoom.hostId === profile.id}
               calledHistory={calledHistory}
               audioLabel={audioLabel}
               audioActive={gameState === 'CALLING' || gameState === 'COUNTDOWN'}
               isHost={settings.mode === 'offline_bot' || !currentRoom || currentRoom.hostId === profile.id}
               gameStatus={gameState}
             />
+
+            {gameState === 'COUNTDOWN' && startCountdownLeft !== null && (
+              <div role="status" className="rounded-xl border-2 border-amber-400 bg-red-900 p-4 text-center text-amber-100 font-black text-xl">
+                🥁 Bắt đầu sau {startCountdownLeft} giây · Người chưa chọn được tự cấp vé 5 số
+              </div>
+            )}
 
             {/* PLAYFIELD */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1">

@@ -23,6 +23,7 @@ export interface LiveRoomGame {
   winnerPlayerName?: string;
   winnerRow?: number[];
   updatedAt?: unknown;
+  countdownEndsAt?: number;
 }
 
 /** Create a room and its small separate live-state document. */

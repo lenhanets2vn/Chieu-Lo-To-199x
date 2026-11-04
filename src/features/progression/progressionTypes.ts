@@ -23,6 +23,7 @@ export interface PlayerProfile {
   id: string;
   username: string;     // Tên đăng nhập (duy nhất, dùng để đăng nhập)
   displayName: string;  // Tên Nickname hiển thị công khai trong game
+  avatarDataUrl?: string; // Ảnh đại diện đã thu nhỏ, lưu riêng cho tài khoản
   yahooTitle: string;   // Danh hiệu 9x
   characterId: string;
   level: number;

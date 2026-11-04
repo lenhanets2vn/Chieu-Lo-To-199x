@@ -104,7 +104,7 @@ export async function flushPendingProfileSync(): Promise<void> {
   if (!profile || !uid || !auth.currentUser || auth.currentUser.uid !== uid || profile.id !== uid) return;
   try {
     await updateDoc(doc(db, 'users', uid), {
-      displayName: profile.displayName, characterId: profile.characterId,
+      displayName: profile.displayName, avatarDataUrl: profile.avatarDataUrl || "", characterId: profile.characterId,
       yahooTitle: profile.yahooTitle, activeMarkerId: profile.activeMarkerId,
       coins: profile.coins, currentExp: profile.currentExp, level: profile.level,
       unlockedItemIds: profile.unlockedItemIds,
