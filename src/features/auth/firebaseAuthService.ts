@@ -1,10 +1,8 @@
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signInAnonymously,
   signOut,
   onAuthStateChanged,
-  User
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../../services/firebase';
@@ -74,35 +72,6 @@ export async function loginPlayerAccount(
   }
 
   throw new Error('Tài khoản đã xác thực nhưng hồ sơ trên máy chủ chưa sẵn sàng. Vui lòng đăng nhập lại.');
-}
-
-/**
- * Guest quick sign-in via Firebase Anonymous auth
- */
-export async function signInAsGuest(currentProfile: PlayerProfile): Promise<PlayerProfile> {
-  let user: User;
-  if (!auth.currentUser) {
-    const cred = await signInAnonymously(auth);
-    user = cred.user;
-  } else {
-    user = auth.currentUser;
-  }
-
-  const updatedProfile: PlayerProfile = currentProfile.id === user.uid || currentProfile.id.startsWith('player-')
-    ? { ...currentProfile, id: user.uid, username: 'khach' }
-    : createStarterProfile(user.uid);
-
-  const userDocRef = doc(db, 'users', user.uid);
-  const snap = await getDoc(userDocRef);
-  if (snap.exists()) {
-    const saved = { ...(snap.data() as PlayerProfile), id: user.uid };
-    saveProfile(saved);
-    return saved;
-  }
-
-  await setDoc(userDocRef, updatedProfile);
-  saveProfile(updatedProfile);
-  return updatedProfile;
 }
 
 /**

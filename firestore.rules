@@ -1,7 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
+    function signedIn() { return request.auth != null
+      && request.auth.token.firebase.sign_in_provider != 'anonymous'; }
     function me(uid) { return signedIn() && request.auth.uid == uid; }
     function smallText(text, max) { return text is string && text.size() > 0 && text.size() <= max; }
     function isHost(roomId) {
@@ -41,7 +42,7 @@ service cloud.firestore {
         && request.resource.data.hostId == request.auth.uid
         && request.resource.data.players.size() == 1
         && request.resource.data.players[0].id == request.auth.uid
-        && request.resource.data.maxPlayers >= 2 && request.resource.data.maxPlayers <= 30
+        && request.resource.data.maxPlayers >= 2 && request.resource.data.maxPlayers <= 100
         && request.resource.data.status == 'WAITING'
         && smallText(request.resource.data.name, 70)
         && !('password' in request.resource.data);
@@ -72,7 +73,7 @@ service cloud.firestore {
       }
       match /members/{uid} {
         allow get: if isMember(roomId);
-        allow list: if isMember(roomId) && request.query.limit <= 30;
+        allow list: if isMember(roomId) && request.query.limit <= 100;
         allow create: if me(uid) && request.resource.data.id == uid
           && request.resource.data.isBot == false
           && request.resource.data.tickets is list && request.resource.data.tickets.size() <= 1

@@ -18,14 +18,16 @@ import { validateAndFilterChatMessage, FilterResult } from './profanityFilter';
  */
 export function subscribeToWorldChat(
   onMessagesUpdate: (messages: ChatMessage[]) => void,
-  onError?: (error: FirestoreError) => void
+  onError?: (error: FirestoreError) => void,
+  onConnection?: (fromServer: boolean) => void
 ): () => void {
   const worldRef = collection(db, 'world_messages');
   const q = query(worldRef, orderBy('createdAt', 'desc'), limit(40));
 
   return onSnapshot(
-    q,
+    q, { includeMetadataChanges: true },
     (snapshot) => {
+      onConnection?.(!snapshot.metadata.fromCache);
       const msgs: ChatMessage[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
@@ -45,7 +47,7 @@ export function subscribeToWorldChat(
       onMessagesUpdate(msgs.reverse());
     },
     (err) => {
-      console.warn('World chat subscription error (falling back to local):', err);
+      console.warn('World chat subscription error:', err);
       onError?.(err);
     }
   );
@@ -85,7 +87,7 @@ export async function sendWorldChatMessage(
     return {
       allowed: false,
       filteredText: filter.filteredText,
-      reason: 'Không thể kết nối đến máy chủ trò chuyện.'
+      reason: `Không gửi được tin nhắn thế giới: ${(error as {code?: string})?.code || 'lỗi kết nối'}. Kiểm tra Firestore Rules và database.`
     };
   }
 }
@@ -96,15 +98,17 @@ export async function sendWorldChatMessage(
 export function subscribeToRoomChat(
   roomId: string,
   onMessagesUpdate: (messages: ChatMessage[]) => void,
-  onError?: (error: FirestoreError) => void
+  onError?: (error: FirestoreError) => void,
+  onConnection?: (fromServer: boolean) => void
 ): () => void {
   if (!roomId) return () => {};
   const roomMsgRef = collection(db, 'rooms', roomId, 'messages');
   const q = query(roomMsgRef, orderBy('createdAt', 'desc'), limit(40));
 
   return onSnapshot(
-    q,
+    q, { includeMetadataChanges: true },
     (snapshot) => {
+      onConnection?.(!snapshot.metadata.fromCache);
       const msgs: ChatMessage[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
@@ -164,7 +168,7 @@ export async function sendRoomChatMessage(
     return {
       allowed: false,
       filteredText: filter.filteredText,
-      reason: 'Lỗi gửi tin nhắn phòng.'
+      reason: `Không gửi được tin phòng: ${(error as {code?: string})?.code || 'lỗi kết nối'}. Kiểm tra quyền thành viên.`
     };
   }
 }

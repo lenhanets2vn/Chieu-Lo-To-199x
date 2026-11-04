@@ -54,15 +54,14 @@ import {
   sendRoomKinhClaim
 } from './features/room/firebaseRoomService';
 import {
-  signInAsGuest,
   syncProfileToFirestoreThrottled,
   cancelPendingProfileSync,
   flushPendingProfileSync
 } from './features/auth/firebaseAuthService';
 import { auth, db } from './services/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { createStarterProfile } from './features/progression/progressionStore';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 // Modals
 import { AuthModal } from './features/auth/AuthModal';
@@ -99,10 +98,12 @@ export default function App() {
   // User Profile
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
   const [readyUserId, setReadyUserId] = useState<string | null>(null);
+  const [authResolved, setAuthResolved] = useState(false);
+  const [authIssue, setAuthIssue] = useState<string | null>(null);
+  const [chatConnection, setChatConnection] = useState<{world: 'connecting'|'online'|'offline'|'error'; room: 'connecting'|'online'|'offline'|'error'}>({ world:'connecting', room:'connecting' });
+  const [chatConnectionError, setChatConnectionError] = useState<{world:string|null;room:string|null}>({ world:null, room:null });
   const handledInviteRef = useRef<string | null>(null);
-  const [isAuthOpen, setIsAuthOpen] = useState<boolean>(() => {
-    return !localStorage.getItem('viet_loto_visited');
-  });
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
 
   // Game Settings: Auto-mark is TRUE by default, Ticket Count is strictly 1!
   const [settings, setSettings] = useState<GameSettings>({
@@ -262,7 +263,7 @@ export default function App() {
       senderId: 'system',
       senderName: 'Tổng Đài Thế Giới',
       characterId: 'cu_teo',
-      text: '🌐 Kênh thế giới trực tuyến: Phòng chơi sức chứa lên tới 30 người!',
+      text: '🌐 Kênh thế giới trực tuyến: Phòng chơi có thể đón đến 100 người!',
       timestamp: Date.now(),
       channel: 'world'
     }
@@ -281,6 +282,8 @@ export default function App() {
   // Multiplayer Rooms
   const [currentRoom, setCurrentRoom] = useState<GameRoom | null>(null);
   const [publicRooms, setPublicRooms] = useState<GameRoom[]>([]);
+  const [roomCloudError, setRoomCloudError] = useState<string|null>(null);
+  const [roomCloudReady, setRoomCloudReady] = useState(false);
 
   // 90s Real-time Quick-reaction floating emotes
   const [floatingEmotes, setFloatingEmotes] = useState<FloatingEmoteItem[]>([]);
@@ -329,33 +332,58 @@ export default function App() {
     syncProfileToFirestoreThrottled(newProfile);
   }, []);
 
-  // Hydrate the user from Firestore, never replace their account with the previous browser user's profile.
+  // Sign-in is mandatory. Auth state is checked before ANY game screen is rendered.
+  // Anonymous sessions from older versions are signed out, never promoted silently.
   useEffect(() => {
     let mounted = true;
-    const unsub = onAuthStateChanged(auth, async user => {
+    const unsubscribe = onAuthStateChanged(auth, async user => {
       cancelPendingProfileSync();
+      if (!mounted) return;
       setReadyUserId(null);
-      if (!user) {
-        try {
-          const guest = await signInAsGuest(createStarterProfile(`player-${crypto.randomUUID()}`));
-          if (mounted) { setProfile(guest); saveProfile(guest); setReadyUserId(guest.id); }
-        } catch (error) { console.warn('Không khởi tạo được tài khoản khách:', error); }
+      setAuthIssue(null);
+      if (!user || user.isAnonymous) {
+        if (user?.isAnonymous) {
+          try { await signOut(auth); } catch (error) { console.warn('Không thể thoát phiên khách cũ:', error); }
+        }
+        if (mounted) { setAuthResolved(true); setIsAuthOpen(true); }
         return;
       }
       try {
-        const snapshot = await getDoc(doc(db, 'users', user.uid));
+        const userRef = doc(db, 'users', user.uid);
+        const snapshot = await getDoc(userRef);
         if (!mounted || auth.currentUser?.uid !== user.uid) return;
+        let cloudProfile: PlayerProfile;
         if (snapshot.exists()) {
-          const remote = { ...(snapshot.data() as PlayerProfile), id: user.uid };
-          setProfile(remote); saveProfile(remote); setReadyUserId(user.uid);
-        } else if (user.isAnonymous) {
-          const guest = await signInAsGuest(createStarterProfile(user.uid));
-          if (mounted) { setProfile(guest); setReadyUserId(user.uid); }
+          cloudProfile = { ...(snapshot.data() as PlayerProfile), id: user.uid };
+        } else {
+          // Recovery only for a truly authenticated user. Never borrow local profile
+          // from another account, and never infer an account from localStorage.
+          const username = (user.email || '').split('@')[0].slice(0, 24) || 'hoi_vien';
+          cloudProfile = { ...createStarterProfile(user.uid), username, displayName: username };
+          await setDoc(userRef, cloudProfile);
         }
-        // Email registrations create their documents immediately after Auth; do not borrow a guest profile.
-      } catch (error) { console.warn('Không tải được tiến trình tài khoản:', error); }
+        if (!mounted || auth.currentUser?.uid !== user.uid) return;
+        setProfile(cloudProfile);
+        saveProfile(cloudProfile);
+        setReadyUserId(user.uid);
+        setIsAuthOpen(false);
+      } catch (error) {
+        if (mounted) {
+          console.warn('Lỗi tải tiến trình cloud:', error);
+          setAuthIssue(`Không thể tải hồ sơ Firebase (${(error as {code?:string})?.code || 'lỗi kết nối'}). Hãy kiểm tra quyền Firestore và thử lại.`);
+          setIsAuthOpen(true);
+        }
+      } finally {
+        if (mounted) setAuthResolved(true);
+      }
+    }, error => {
+      if (mounted) {
+        setAuthResolved(true);
+        setAuthIssue(`Lỗi xác thực Firebase: ${error.code}`);
+        setIsAuthOpen(true);
+      }
     });
-    return () => { mounted = false; unsub(); };
+    return () => { mounted = false; unsubscribe(); };
   }, []);
 
   // Flush noncritical profile writes as the player hides the browser tab.
@@ -367,23 +395,39 @@ export default function App() {
 
   // Subscribe to real-time public rooms from Firestore
   useEffect(() => {
-    if (!isRoomModalOpen || document.visibilityState !== 'visible') return;
-    const unsubPublicRooms = subscribeToPublicRooms((rooms) => setPublicRooms(rooms));
+    if (!readyUserId || !isRoomModalOpen || document.visibilityState !== 'visible') return;
+    setRoomCloudReady(false);
+    setRoomCloudError(null);
+    const unsubPublicRooms = subscribeToPublicRooms((rooms) => setPublicRooms(rooms), err => {
+      setRoomCloudError(`Không tải được phòng online: ${err.code}. Kiểm tra Firestore Rules và ID database.`);
+      setRoomCloudReady(false);
+    }, fromServer => {
+      setRoomCloudReady(fromServer);
+      if (fromServer) setRoomCloudError(null);
+    });
     return () => unsubPublicRooms();
-  }, [isRoomModalOpen]);
+  }, [isRoomModalOpen, readyUserId]);
 
   // Subscribe to real-time World chat from Firestore
   useEffect(() => {
-    if (document.visibilityState === 'hidden') return;
+    if (!readyUserId || document.visibilityState === 'hidden') return;
     if (!isWorldChatOpen && (currentView !== 'GAME_MATCH' || matchRightTab !== 'chat' || activeChatChannel !== 'world')) return;
+    setChatConnection(previous => ({...previous, world:'connecting'}));
+    setChatConnectionError(previous => ({...previous, world:null}));
     const unsubWorld = subscribeToWorldChat((worldMsgs) => {
       setMessages(prev => {
         const nonWorld = prev.filter(m => m.channel !== 'world');
         return [...nonWorld, ...worldMsgs].sort((a, b) => a.timestamp - b.timestamp);
       });
+    }, error => {
+      setChatConnection(previous => ({...previous, world:'error'}));
+      setChatConnectionError(previous => ({...previous, world:`Kênh thế giới bị từ chối (${error.code}). Kiểm tra đúng Firestore database và Security Rules đã deploy.`}));
+    }, fromServer => {
+      setChatConnection(previous => ({...previous, world:fromServer?'online':'offline'}));
+      if (fromServer) setChatConnectionError(previous => ({...previous, world:null}));
     });
     return () => unsubWorld();
-  }, [currentView, matchRightTab, activeChatChannel, isWorldChatOpen]);
+  }, [currentView, matchRightTab, activeChatChannel, isWorldChatOpen, readyUserId]);
 
   // Gameplay listeners are stable for the lifetime of one room: switching chat tabs
   // MUST NOT detach and re-query room/members/state (billable initial reads).
@@ -424,12 +468,20 @@ export default function App() {
 
   // Chat has its own visibility-scoped listener, disconnected without affecting gameplay.
   useEffect(() => {
-    if (!currentRoom?.id || currentView !== 'GAME_MATCH' || matchRightTab !== 'chat' || activeChatChannel !== 'room') return;
+    if (!readyUserId || !currentRoom?.id || currentView !== 'GAME_MATCH' || matchRightTab !== 'chat' || activeChatChannel !== 'room') return;
+    setChatConnection(previous => ({...previous, room:'connecting'}));
+    setChatConnectionError(previous => ({...previous, room:null}));
     return subscribeToRoomChat(currentRoom.id, roomMsgs => {
       setMessages(prev => [...prev.filter(m => m.channel !== 'room'), ...roomMsgs]
         .sort((a, b) => a.timestamp - b.timestamp));
+    }, error => {
+      setChatConnection(previous => ({...previous, room:'error'}));
+      setChatConnectionError(previous => ({...previous, room:`Chat phòng lỗi (${error.code}). Kiểm tra thành viên phòng, Firestore Rules và database.`}));
+    }, fromServer => {
+      setChatConnection(previous => ({...previous, room:fromServer?'online':'offline'}));
+      if (fromServer) setChatConnectionError(previous => ({...previous, room:null}));
     });
-  }, [currentRoom?.id, currentView, matchRightTab, activeChatChannel]);
+  }, [readyUserId, currentRoom?.id, currentView, matchRightTab, activeChatChannel]);
 
   useEffect(() => {
     if (!currentRoom?.id || currentView !== 'GAME_MATCH') return;
@@ -530,24 +582,14 @@ export default function App() {
     });
   }, []);
 
-  const handleSendMessage = (text: string, channel: 'room' | 'world', isVipEmoji?: string) => {
+  const handleSendMessage = async (text: string, channel: 'room' | 'world', isVipEmoji?: string) => {
     const sender = { id: profile.id, name: profile.displayName, characterId: profile.characterId };
-    if (channel === 'world') {
-      void sendWorldChatMessage(sender, text, isVipEmoji).then(result => {
-        if (!result.allowed) alert(result.reason || 'Không gửi được tin nhắn.');
-      });
-    } else if (currentRoom?.id) {
-      void sendRoomChatMessage(currentRoom.id, sender, text, isVipEmoji).then(result => {
-        if (!result.allowed) alert(result.reason || 'Không gửi được tin nhắn phòng.');
-      });
-    } else {
-      const local: ChatMessage = {
-        id: `local-${crypto.randomUUID()}`, senderId: profile.id,
-        senderName: profile.displayName, characterId: profile.characterId,
-        text, timestamp: Date.now(), channel: 'room'
-      };
-      setMessages(prev => [...prev.slice(-50), local]);
+    if (!readyUserId || readyUserId !== auth.currentUser?.uid || auth.currentUser?.isAnonymous) {
+      return { allowed:false, filteredText:'', reason:'Cần đăng nhập tài khoản Firebase để gửi tin.' };
     }
+    if (channel === 'world') return sendWorldChatMessage(sender, text, isVipEmoji);
+    if (currentRoom?.id) return sendRoomChatMessage(currentRoom.id, sender, text, isVipEmoji);
+    return { allowed:false, filteredText:'', reason:'Hãy vào phòng online để sử dụng chat phòng.' };
   };
 
   const handleSendBuzz = () => {
@@ -562,8 +604,8 @@ export default function App() {
   const handleShareRoomToWorld = () => {
     if (!currentRoom) return;
     if (currentRoom.isPrivate) { alert('Phòng riêng không được phát mã mời lên chat thế giới. Hãy gửi mã trực tiếp cho bạn bè.'); return; }
-    const inviteText = `📢 [MÃ PHÒNG: #${currentRoom.code}] "${currentRoom.name}" sức chứa 30 người đang mở! Mời bà con vào chơi!`;
-    handleSendMessage(inviteText, 'world');
+    const inviteText = `📢 [MÃ PHÒNG: #${currentRoom.code}] "${currentRoom.name}" sức chứa ${currentRoom.maxPlayers} người đang mở! Mời bà con vào chơi!`;
+    void handleSendMessage(inviteText, 'world').then(result => { if (!result.allowed) alert(result.reason || 'Không gửi được lời mời.'); });
   };
 
   /** Chốt đúng 5 số. Nếu hết giờ, giữ số người chơi đã chọn và bốc bù số còn thiếu. */
@@ -591,7 +633,7 @@ export default function App() {
         .catch(error => console.warn('Không lưu được vé vào phòng online:', error));
     }
     setPlayers(previous => {
-      const updated = previous.map(person => person.isBot ? person : { ...person, tickets });
+      const updated = previous.map(person => person.id === profile.id ? { ...person, tickets } : person);
       playersRef.current = updated;
       return updated;
     });
@@ -708,6 +750,7 @@ export default function App() {
     // Không có quyền đánh dấu trước: tất cả 5 số chỉ được đánh dấu khi âm thanh mở số.
 
     setGameState('WAITING');
+    setActiveChatChannel(mode === 'offline_bot' ? 'world' : 'room');
     setCurrentView('GAME_MATCH');
     if (mode === 'online_friend' && liveRoom?.hostId === auth.currentUser?.uid) {
       void publishOwnRoomTickets(liveRoom.id, userPlayer, []).catch(error => console.warn('Không reset được vé chủ phòng:', error));
@@ -1001,7 +1044,7 @@ export default function App() {
     setAudioLabel('Đang phát nhạc mở màn...');
 
     setAudioError(null);
-    handleSendMessage('🏮 Trống hội nổi lên! Nghe hết nhạc dạo rồi gánh hát bắt đầu kêu số!', 'room');
+    if (liveRoom) void handleSendMessage('🏮 Trống hội nổi lên! Nghe hết nhạc dạo rồi gánh hát bắt đầu kêu số!', 'room');
 
     speechCaller.playIntro({
       onStart: () => {
@@ -1154,7 +1197,7 @@ export default function App() {
       lastBallNumber: currentBall || 0
     });
 
-    const victoryText = `🎉 KINH RỒI! ${winnerName} đã hô KINH thành công ở bi số ${currentBall} trong phòng 30 người!`;
+    const victoryText = `🎉 KINH RỒI! ${winnerName} đã hô KINH thành công ở bi số ${currentBall} trong phòng ${currentRoom?.maxPlayers || players.length} người!`;
     handleSendMessage(victoryText, 'room');
 
     if (leveledUp) {
@@ -1345,6 +1388,24 @@ export default function App() {
 
   const currentTheme = getThemeConfig(profile.activeThemeId);
 
+  // The entire gameplay UI remains inaccessible until Firebase Auth AND a
+  // matching Firestore user profile are ready (no anonymous/guest mode).
+  if (!authResolved || !readyUserId || auth.currentUser?.uid !== readyUserId || auth.currentUser?.isAnonymous) {
+    return (
+      <div className="min-h-screen bg-[#1c0f09] text-amber-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-lg space-y-3 text-center">
+          <h1 className="text-2xl sm:text-3xl font-black text-yellow-300">🏮 LÔ TÔ HỘI CHỢ 199x</h1>
+          {!authResolved && <p role="status" className="text-amber-200">Đang kiểm tra phiên đăng nhập Firebase…</p>}
+          {authIssue && <p role="alert" className="bg-red-950 border border-red-500 p-3 rounded-lg text-red-100 text-sm">{authIssue}</p>}
+          {authResolved && <AuthModal isOpen={true} required onClose={() => {}} onAuthSuccess={newProfile => {
+            cancelPendingProfileSync(); setProfile(newProfile); saveProfile(newProfile);
+            setReadyUserId(newProfile.id); setAuthIssue(null);
+          }} currentProfile={profile} />}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen ${currentTheme.wrapper} flex flex-col relative selection:text-white ${isBuzzing ? 'animate-buzz' : ''}`}>
       {/* 90s CRT Scanline Overlay */}
@@ -1388,6 +1449,7 @@ export default function App() {
         </nav>
 
         <div className="flex items-center gap-2 shrink-0">
+          <span className="hidden sm:inline text-[10px] rounded border border-emerald-600/50 bg-emerald-950/60 px-2 py-1 text-emerald-200 font-bold" title="Đã xác thực tài khoản Firebase; chat thông báo Cloud riêng trong từng kênh">☁ Đã đăng nhập</span>
           <RetroButton
             size="sm"
             variant="gold"
@@ -1402,6 +1464,7 @@ export default function App() {
       {/* V7 permanent controls: shown BOTH on MENU and inside GAME_MATCH.
           This is the real App root, guaranteed mounted whenever App.tsx renders. */}
       <LotoAudioControls
+        visible={currentView === 'GAME_MATCH' && (gameState === 'COUNTDOWN' || gameState === 'CALLING' || gameState === 'PAUSED')}
         enabled={settings.voiceCaller}
         volume={musicVolume}
         playing={gameState === 'CALLING' || gameState === 'COUNTDOWN' || gameState === 'PAUSED'}
@@ -1655,12 +1718,15 @@ export default function App() {
                   {matchRightTab === 'chat' && (
                     <ChatPanel
                       userId={profile.id}
+                      connectionState={chatConnection[activeChatChannel]}
+                      connectionError={chatConnectionError[activeChatChannel]}
                       activeChannel={activeChatChannel}
                       onChannelChange={setActiveChatChannel}
                       messages={messages}
                       onSendMessage={handleSendMessage}
                       onSendBuzz={handleSendBuzz}
                       currentRoomCode={currentRoom?.code}
+                      roomCapacity={currentRoom?.maxPlayers}
                       isInsideRoom={settings.mode === 'online_friend'}
                       onShareRoomToWorld={currentRoom && !currentRoom.isPrivate ? handleShareRoomToWorld : undefined}
                       onJoinRoomFromChat={(code) => handleJoinRoom(code)}
@@ -1769,6 +1835,8 @@ export default function App() {
             </div>
             <div className="h-[min(68vh,580px)]">
               <ChatPanel userId={profile.id} messages={messages}
+                connectionState={chatConnection.world}
+                connectionError={chatConnectionError.world}
                 onSendMessage={handleSendMessage} onSendBuzz={() => {}}
                 isInsideRoom={false} activeChannel="world"
                 onJoinRoomFromChat={code => { setIsWorldChatOpen(false); void handleJoinRoom(code); }}
@@ -1782,6 +1850,8 @@ export default function App() {
         isOpen={isRoomModalOpen}
         onClose={() => setIsRoomModalOpen(false)}
         publicRooms={publicRooms}
+        cloudError={roomCloudError}
+        cloudReady={roomCloudReady}
         onCreateRoom={handleCreateRoom}
         onJoinRoom={handleJoinRoom}
         currentRoom={currentRoom}

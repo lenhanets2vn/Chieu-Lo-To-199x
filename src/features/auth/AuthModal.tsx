@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { RetroWindow } from '../../components/ui/RetroWindow';
 import { RetroButton } from '../../components/ui/RetroButton';
 import { PlayerProfile } from '../progression/progressionTypes';
-import { registerPlayerAccount, loginPlayerAccount, signInAsGuest } from './firebaseAuthService';
+import { registerPlayerAccount, loginPlayerAccount } from './firebaseAuthService';
 import { User, Lock, KeyRound, Sparkles, UserPlus, LogIn, Loader2 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -10,17 +10,19 @@ interface AuthModalProps {
   onClose: () => void;
   onAuthSuccess: (profile: PlayerProfile) => void;
   currentProfile: PlayerProfile;
+  required?: boolean;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   onClose,
   onAuthSuccess,
-  currentProfile
+  currentProfile,
+  required = false
 }) => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState(currentProfile.username || '');
-  const [nickname, setNickname] = useState(currentProfile.displayName || '');
+  const [username, setUsername] = useState('');
+  const [nickname, setNickname] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -85,28 +87,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       } else if (errCode === 'auth/invalid-credential' || errCode === 'auth/user-not-found' || errCode === 'auth/wrong-password') {
         setErrorMsg('Tên đăng nhập hoặc mật khẩu không chính xác!');
       } else if (errCode === 'auth/network-request-failed') {
-        setErrorMsg('Mạng chập chờn! Đang lưu tiến trình tạm thời ở máy.');
+        setErrorMsg('Không kết nối được Firebase. Kiểm tra mạng rồi thử lại; chưa đăng nhập nên không thể chơi.');
       } else {
         setErrorMsg(err?.message || 'Có lỗi khi kết nối máy chủ xác thực.');
       }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGuestQuickPlay = async () => {
-    setIsLoading(true);
-    setErrorMsg('');
-    try {
-      const guestProfile = await signInAsGuest(currentProfile);
-      setSuccessMsg('Đang vào phòng với tài khoản Khách...');
-      setTimeout(() => {
-        onAuthSuccess(guestProfile);
-        onClose();
-      }, 500);
-    } catch (err) {
-      console.error('Guest login err:', err);
-      onClose();
     } finally {
       setIsLoading(false);
     }
@@ -118,7 +102,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         <RetroWindow
           title="ĐĂNG NHẬP / ĐĂNG KÝ HỘI VIÊN LÔ TÔ ONLINE"
           icon="🔑"
-          onClose={onClose}
+          onClose={required ? undefined : onClose}
         >
           {/* Mode Switcher */}
           <div className="flex gap-1 mb-3 border-b border-[#808080] pb-1">
@@ -226,14 +210,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             )}
 
             <div className="pt-2 flex justify-between items-center gap-2">
-              <button
-                type="button"
-                onClick={handleGuestQuickPlay}
-                disabled={isLoading}
-                className="text-[11px] text-blue-900 font-bold hover:underline cursor-pointer"
-              >
-                Chơi nhanh vãng lai (Guest)
-              </button>
+              <span className="text-[11px] text-stone-600 font-semibold">
+                {required ? 'Cần đăng nhập hoặc đăng ký để chơi và lưu tiến trình.' : 'Tài khoản của bạn được lưu trên Firebase.'}
+              </span>
               <RetroButton
                 type="submit"
                 size="md"

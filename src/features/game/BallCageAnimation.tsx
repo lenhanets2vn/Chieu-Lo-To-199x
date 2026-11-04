@@ -120,15 +120,15 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
       )}
 
       {/* Grid: Last Called Number Display + Full History */}
-      <div className="grid grid-cols-1 lg:grid-cols-[165px_1fr] gap-3 pt-3">
+      <div className="grid grid-cols-1 lg:grid-cols-[135px_1fr] gap-2 pt-2">
         {/* Number Badge */}
-        <div className="rounded-xl border-2 border-amber-700/80 bg-gradient-to-b from-[#2a1608] to-[#1c0d05] min-h-32 flex flex-col items-center justify-center p-3 text-center shadow-inner">
+        <div className="rounded-xl border-2 border-amber-700/80 bg-gradient-to-b from-[#2a1608] to-[#1c0d05] min-h-24 flex flex-col items-center justify-center p-3 text-center shadow-inner">
           <span className="text-[11px] text-amber-300 font-extrabold uppercase tracking-wider">
             SỐ VỪA KÊU
           </span>
           <div
             key={lastCalled ?? 'none'}
-            className={`text-5xl sm:text-6xl font-black font-pixel tabular-nums leading-none my-2 text-yellow-300 drop-shadow-[0_0_12px_rgba(250,204,21,0.6)] ${
+            className={`text-4xl sm:text-5xl font-black font-pixel tabular-nums leading-none my-2 text-yellow-300 drop-shadow-[0_0_12px_rgba(250,204,21,0.6)] ${
               lastCalled !== null ? 'animate-[numberAppear_0.3s_ease-out]' : ''
             }`}
           >
@@ -144,7 +144,7 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
           <div className="flex items-center justify-between gap-2 mb-2">
             <p className="text-xs text-yellow-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
               <span>📋</span>
-              <span>LỊCH SỬ GỌI SỐ (THEO THỨ TỰ HÒ THỰC TẾ)</span>
+              <span>LỊCH SỬ GỌI SỐ</span>
             </p>
             <span className="text-[11px] font-mono text-amber-300 bg-black/40 px-2 py-0.5 rounded border border-amber-900">
               {calledHistory.length}/90 số
@@ -153,7 +153,7 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
 
           <div
             ref={historyRef}
-            className="grid grid-cols-5 sm:grid-cols-8 lg:grid-cols-10 gap-2 content-start overflow-y-auto max-h-[170px] min-h-[85px] pr-1 p-1 bg-[#a91f1d] rounded-lg border-2 border-[#f4cc7d]"
+            className="grid grid-cols-8 sm:grid-cols-12 lg:grid-cols-15 gap-1 sm:gap-1.5 content-start overflow-y-auto max-h-[116px] min-h-[48px] pr-1 p-1 bg-[#a91f1d] rounded-lg border border-[#f4cc7d]"
             aria-live="polite"
             aria-label="Các số đã được hò và hiện trên màn hình"
           >
@@ -167,9 +167,9 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
                 return (
                   <span
                     key={`${index}-${number}`}
-                    className={`aspect-square rounded-full border-[3px] flex items-center justify-center font-black text-base sm:text-lg tabular-nums transition-all ${
+                    className={`aspect-square rounded-full border-2 flex items-center justify-center font-black text-[10px] sm:text-xs tabular-nums leading-none transition-colors ${
                       isLatest
-                        ? 'bg-[#bee7ac] border-[#1b8f73] text-[#166955] ring-2 ring-yellow-400/60 font-black scale-105 shadow-md'
+                        ? 'bg-[#bee7ac] border-[#1b8f73] text-[#166955] ring-2 ring-yellow-400/60 font-black shadow-sm'
                         : 'bg-[#fff1b4] text-[#b52231] border-[#e0a05b] hover:border-[#f7ca73]'
                     }`}
                     title={`Lượt gọi thứ ${index + 1}: số ${number}`}

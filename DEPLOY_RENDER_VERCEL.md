@@ -48,7 +48,7 @@ Cách lựa chọn:
 
 ## Firebase Console (bắt buộc để online hoạt động)
 
-1. Chọn đúng Firebase project, kiểm tra **Authentication > Sign-in method**: bật Email/Password và Anonymous (theo cách đăng nhập app đang sử dụng).
+1. Chọn đúng Firebase project, kiểm tra **Authentication > Sign-in method**: bật Email/Password; không cần Anonymous vì ứng dụng bắt buộc đăng ký/đăng nhập.
 2. **Authentication > Settings > Authorized domains**: thêm domain `*.vercel.app` thực tế / `*.onrender.com` thực tế và custom domain đang dùng, mỗi domain chính xác, không kèm `https://` hoặc đường dẫn. Lưu ý Firebase Auth không tự cấp phép domain mới chỉ vì deploy thành công.
 3. **Firestore Database**: kiểm tra database có tên đúng, đã tạo và đang chạy; triển khai `firestore.rules` và `firestore.indexes.json` **vào database đó** bằng tài khoản được phép. Deploy trên Vercel/Render KHÔNG tự deploy Firestore Rules.
 4. Cấu hình Firebase API key restriction phù hợp Firebase Authentication nếu hệ thống sử dụng key hạn chế; không đưa service account/Admin private key vào VITE_ vars.

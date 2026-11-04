@@ -41,7 +41,7 @@ export async function createOnlineRoom(
     isPrivate: params.isPrivate,
     hostId: hostPlayer.id,
     hostName: hostPlayer.name,
-    maxPlayers: Math.min(30, Math.max(2, params.maxPlayers || 30)),
+    maxPlayers: Math.min(100, Math.max(2, params.maxPlayers || 30)),
     players: [hostPlayer],
     status: 'WAITING',
     currentBallNumber: null,
@@ -63,10 +63,12 @@ export async function createOnlineRoom(
 /** Public lobby is loaded only when the lobby dialog is visible. */
 export function subscribeToPublicRooms(
   onRoomsUpdate: (rooms: GameRoom[]) => void,
-  onError?: (error: FirestoreError) => void
+  onError?: (error: FirestoreError) => void,
+  onConnection?: (fromServer: boolean) => void
 ): () => void {
   const q = query(collection(db, 'rooms'), where('isPrivate', '==', false), limit(20));
-  return onSnapshot(q, snapshot => {
+  return onSnapshot(q, { includeMetadataChanges: true }, snapshot => {
+    onConnection?.(!snapshot.metadata.fromCache);
     onRoomsUpdate(snapshot.docs.map(d => d.data() as GameRoom).sort((a,b) => b.createdAt - a.createdAt));
   }, err => onError?.(err));
 }
@@ -105,7 +107,7 @@ export async function publishOwnRoomTickets(roomId: string, player: PlayerState,
 
 export function subscribeToRoomMembers(roomId: string, onMembers: (players: PlayerState[]) => void,
   onError?: (error: FirestoreError) => void): () => void {
-  const q = query(collection(db, 'rooms', roomId, 'members'), limit(30));
+  const q = query(collection(db, 'rooms', roomId, 'members'), limit(100));
   return onSnapshot(q, snapshot => {
     onMembers(snapshot.docs.map(d => d.data() as PlayerState));
   }, err => onError?.(err));

@@ -8,6 +8,8 @@ interface RoomModalProps {
   isOpen: boolean;
   onClose: () => void;
   publicRooms: GameRoom[];
+  cloudError?: string | null;
+  cloudReady?: boolean;
   onCreateRoom: (roomData: { name: string; isPrivate: boolean; password?: string; callSpeed: number; maxPlayers: number }) => void;
   onJoinRoom: (code: string, password?: string) => void;
   currentRoom?: GameRoom | null;
@@ -17,6 +19,8 @@ export const RoomModal: React.FC<RoomModalProps> = ({
   isOpen,
   onClose,
   publicRooms,
+  cloudError = null,
+  cloudReady = false,
   onCreateRoom,
   onJoinRoom,
   currentRoom
@@ -60,6 +64,9 @@ export const RoomModal: React.FC<RoomModalProps> = ({
           icon="🏮"
           onClose={onClose}
         >
+          <div role="status" className={`mb-2 rounded border px-2 py-1 text-[11px] font-bold ${cloudError ? 'bg-rose-100 border-red-400 text-red-800' : cloudReady ? 'bg-emerald-100 border-emerald-400 text-emerald-900' : 'bg-amber-50 border-amber-400 text-amber-900'}`}>
+            {cloudError || (cloudReady ? '☁ Đã kết nối danh sách phòng Firebase' : 'Đang kết nối danh sách phòng Firebase…')}
+          </div>
           {/* Tabs: Chỉ có Tạo phòng, Phòng Public, Phòng Private */}
           <div className="flex gap-1 mb-3 border-b border-[#808080] pb-1">
             <button
@@ -249,7 +256,7 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                     className="w-full border border-[#808080] px-2 py-1 text-xs bg-white font-bold"
                   >
                     <option value="public">Phòng Public (Ai cũng vào được)</option>
-                    <option value="private">Phòng Private (Cần mật khẩu)</option>
+<option value="private">Phòng Private (Bằng mã mời riêng)</option>
                   </select>
                 </div>
 
@@ -262,10 +269,14 @@ export const RoomModal: React.FC<RoomModalProps> = ({
                     onChange={(e) => setMaxPlayers(Number(e.target.value))}
                     className="w-full border border-[#808080] px-2 py-1 text-xs bg-white font-bold text-amber-900"
                   >
-                    <option value={30}>30 Người (Đại Tiệc Lô Tô)</option>
+                    <option value={100}>100 Người (Đại Hội)</option>
+                    <option value={75}>75 Người</option>
+                    <option value={50}>50 Người</option>
+                    <option value={30}>30 Người (Mặc định)</option>
                     <option value={20}>20 Người</option>
                     <option value={10}>10 Người</option>
                   </select>
+                  <span className="block mt-1 text-[10px] text-stone-600">Đã tự điền số người; có thể chọn tối đa 100.</span>
                 </div>
               </div>
 

@@ -2,15 +2,16 @@ import React, { useState, useRef, useEffect } from 'react';
 import { RETRO_9X_EMOJIS, ChatMessage } from './yahooEmojis';
 import { audioSynthesizer } from '../audio/audioSynthesizer';
 import { RetroButton } from '../../components/ui/RetroButton';
-import { validateAndFilterChatMessage } from './profanityFilter';
+import type { FilterResult } from './profanityFilter';
 import { Smile, Send, BellRing, Mic, MicOff, Globe, Users, Share2, Sparkles, AlertTriangle } from 'lucide-react';
 
 interface ChatPanelProps {
   userId?: string;
   messages: ChatMessage[];
-  onSendMessage: (text: string, channel: 'room' | 'world', isVipEmoji?: string) => void;
+  onSendMessage: (text: string, channel: 'room' | 'world', isVipEmoji?: string) => Promise<FilterResult>;
   onSendBuzz: () => void;
   currentRoomCode?: string;
+  roomCapacity?: number;
   isInsideRoom: boolean;
   activeChannel?: 'room' | 'world';
   onChannelChange?: (channel: 'room' | 'world') => void;
@@ -18,6 +19,8 @@ interface ChatPanelProps {
   onJoinRoomFromChat?: (code: string) => void;
   unlockedVipEmojis?: string[];
   onTriggerVipEffect?: (effectType: string) => void;
+  connectionState?: 'connecting' | 'online' | 'offline' | 'error';
+  connectionError?: string | null;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -26,13 +29,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onSendMessage,
   onSendBuzz,
   currentRoomCode,
+  roomCapacity,
   isInsideRoom,
   activeChannel,
   onChannelChange,
   onShareRoomToWorld,
   onJoinRoomFromChat,
   onTriggerVipEffect,
-  unlockedVipEmojis = []
+  unlockedVipEmojis = [],
+  connectionState = 'connecting',
+  connectionError = null
 }) => {
   const [localActiveTab, setLocalActiveTab] = useState<'room' | 'world'>(isInsideRoom ? 'room' : 'world');
   const activeTab = activeChannel ?? localActiveTab;
@@ -41,6 +47,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiTab, setEmojiTab] = useState<'retro' | 'vip'>('retro');
   const [filterWarning, setFilterWarning] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -49,23 +56,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   }, [messages, activeTab]);
 
 
-  const handleSend = (e?: React.FormEvent) => {
+  const handleSend = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const text = inputText.trim();
-    if (!text) return;
-
-    // Validate against profanity & spam filter
-    const filter = validateAndFilterChatMessage(userId, text, activeTab);
-    if (!filter.allowed) {
-      setFilterWarning(filter.reason || 'Tin nhắn không hợp lệ.');
-      setTimeout(() => setFilterWarning(null), 3000);
+    if (!text || sending) return;
+    if (connectionState === 'error' || connectionState === 'offline') {
+      setFilterWarning(connectionError || 'Chat chưa kết nối Cloud, chưa thể gửi tin.');
       return;
     }
-
-    setFilterWarning(null);
-    onSendMessage(filter.filteredText, activeTab);
-    setInputText('');
-    setShowEmojiPicker(false);
+    setSending(true);
+    try {
+      // Only the Firebase service performs the rate-limit check. The old second
+      // check rejected every message as spam before it reached Firestore.
+      const result = await onSendMessage(text, activeTab);
+      if (!result.allowed) {
+        setFilterWarning(result.reason || 'Không gửi được tin nhắn.');
+        return;
+      }
+      setFilterWarning(null);
+      setInputText('');
+      setShowEmojiPicker(false);
+    } catch (error) {
+      setFilterWarning(error instanceof Error ? error.message : 'Không gửi được tin nhắn.');
+    } finally {
+      setSending(false);
+    }
   };
 
   const handleBuzzClick = () => {
@@ -80,7 +95,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
     audioSynthesizer.playClick();
     onTriggerVipEffect?.(effect);
-    onSendMessage(`[VIP ${symbol}] ${name}!`, activeTab, effect);
+    void onSendMessage(`[VIP ${symbol}] ${name}!`, activeTab, effect).then(result => {
+      if (!result.allowed) setFilterWarning(result.reason || 'Không gửi được biểu tượng.');
+    });
     setShowEmojiPicker(false);
   };
 
@@ -93,6 +110,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         <div className="flex items-center gap-1.5">
           <span className="text-yellow-300 font-pixel text-sm">💬</span>
           <span className="tracking-tight font-pixel text-sm">HỘP TRÒ CHUYỆN HỘI CHIẾU</span>
+          <span role="status" className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${connectionState === 'online' ? 'bg-emerald-700' : connectionState === 'error' ? 'bg-red-700' : 'bg-amber-700'}`}>
+            {connectionState === 'online' ? '● Cloud' : connectionState === 'error' ? '✕ Mất kết nối' : connectionState === 'offline' ? 'Ngoại tuyến' : 'Đang kết nối…'}
+          </span>
         </div>
         <div className="flex items-center gap-1">
           {isInsideRoom && <button
@@ -106,6 +126,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       </div>
 
+      {connectionError && <p role="alert" className="bg-red-50 border border-red-300 px-2 py-1 text-red-800 text-[11px] font-semibold">{connectionError}</p>}
       {/* Tabs: Kênh Chiếu Hội vs Kênh Giao Lưu */}
       <div className="flex items-center gap-1 px-1 pt-1 bg-[#d4d0c8] border-b border-[#808080]">
         {isInsideRoom && <button
@@ -189,7 +210,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 {isInvite && extractedCode && onJoinRoomFromChat && (
                   <div className="mt-1 p-1.5 bg-amber-50 border border-amber-300 rounded flex items-center justify-between">
                     <span className="font-mono text-amber-900 font-bold text-[11px]">
-                      Phòng #{extractedCode} (Sức chứa 30 người)
+                      Phòng #{extractedCode}{roomCapacity ? ` (Sức chứa ${roomCapacity} người)` : ''}
                     </span>
                     <button
                       onClick={() => onJoinRoomFromChat(extractedCode)}
@@ -298,8 +319,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           className="flex-1 bg-white border border-[#808080] px-2 py-1 text-xs text-black outline-none win98-box-inset font-sans"
         />
 
-        <RetroButton type="submit" size="sm" variant="primary" icon={<Send className="w-3 h-3" />}>
-          Gửi
+        <RetroButton type="submit" size="sm" variant="primary" disabled={sending || connectionState === 'error' || connectionState === 'offline'} icon={<Send className="w-3 h-3" />}>
+          {sending ? 'Đang gửi…' : 'Gửi'}
         </RetroButton>
       </form>
     </div>
