@@ -59,8 +59,6 @@ export const BallCageAnimation: React.FC<BallCageAnimationProps> = ({
     stateText = 'Chiếu hội sẵn sàng — Mời bạn chọn bộ số rồi bấm BẮT ĐẦU VÁN CHƠI';
   } else if (isIntroPlaying) {
     stateText = '🏮 Nhạc mở màn — Chuẩn bị kêu số...';
-  } else if (gameStatus === 'PAUSED') {
-    stateText = '⏸ Tạm dừng phát nhạc';
   } else if (gameStatus === 'GAME_OVER') {
     stateText = '🎺 Ván chơi kết thúc';
   } else if (isSingingSong) {

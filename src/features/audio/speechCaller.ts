@@ -215,9 +215,11 @@ class LotoSoundpackPlayer {
   public async playTrack(
     file: string,
     callbacks: AudioCallbacks = {},
-    number?: number
+    number?: number,
+    offsetSeconds: number = 0
   ): Promise<void> {
     this.stopSample();
+    const requestedAt = Date.now();
     this.sessionToken++;
     const currentToken = this.sessionToken;
 
@@ -230,10 +232,15 @@ class LotoSoundpackPlayer {
       if (this.sessionToken !== currentToken) return;
 
       const ctx = this.ensureContext();
+      // Followers may join a track already in progress. Seek to the shared
+      // server event time instead of replaying the entire song from second 0.
+      const elapsedLoading = offsetSeconds > 0 ? (Date.now() - requestedAt) / 1000 : 0;
+      const actualOffset = offsetSeconds + elapsedLoading;
+      const offset = Math.max(0, Math.min(Math.max(0, buffer.duration - 0.05), actualOffset));
+      if (actualOffset >= buffer.duration) return;
       const { source, gain } = this.createSourceForBuffer(buffer);
-
       const startTime = ctx.currentTime + 0.05;
-      const endTime = startTime + buffer.duration;
+      const endTime = startTime + buffer.duration - offset;
 
       const track: ScheduledTrack = {
         file,
@@ -249,7 +256,7 @@ class LotoSoundpackPlayer {
       };
 
       this.currentTrack = track;
-      source.start(startTime);
+      source.start(startTime, offset);
       callbacks.onStart?.();
 
       this.startTicker();
@@ -416,6 +423,12 @@ class LotoSoundpackPlayer {
     if (this.context && this.context.state === 'suspended') {
       await this.context.resume();
     }
+  }
+
+  /** Guest-only playback: never draws, calls or publishes a number. */
+  public playSyncedTrack(file: string, offsetSeconds: number, callbacks: AudioCallbacks = {}): void {
+    if (!/^(?:intro|near_end|outro|(?:0[1-9]|[1-8][0-9]|90))$/.test(file)) return;
+    void this.playTrack(file, callbacks, /^\d+$/.test(file) ? Number(file) : undefined, offsetSeconds);
   }
 
   public playIntro(callbacks: AudioCallbacks = {}): void {

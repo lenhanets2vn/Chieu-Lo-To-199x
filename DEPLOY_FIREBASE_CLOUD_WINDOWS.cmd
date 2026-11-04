@@ -5,7 +5,7 @@ title LO TO 199X - CAP NHAT FIRESTORE RULES
 set "PROJECT_ID=loto-83a1a"
 set "DATABASE_ID=(default)"
 echo ================================================
-echo  LO TO 199X - FIRESTORE NAMED DATABASE RULES
+echo  LO TO 199X - FIRESTORE DEFAULT DATABASE RULES
 echo ================================================
 echo Project: %PROJECT_ID%
 echo Database: %DATABASE_ID%
@@ -34,10 +34,10 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo [2/3] Kiem tra named database trong du an...
+echo [2/3] Kiem tra default database trong du an...
 call firebase firestore:databases:get "%DATABASE_ID%" --project "%PROJECT_ID%"
 if errorlevel 1 (
-  echo [LOI] Named database khong ton tai hoac tai khoan thieu quyen.
+  echo [LOI] Default database khong ton tai hoac tai khoan thieu quyen.
   echo KHONG tu dong tao database moi hoac doi sang default.
   pause
   exit /b 1

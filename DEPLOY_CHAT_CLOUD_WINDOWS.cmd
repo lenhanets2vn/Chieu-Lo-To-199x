@@ -18,7 +18,7 @@ if errorlevel 1 (
 call firebase login
 if errorlevel 1 (pause & exit /b 1)
 echo.
-echo [1/2] Cap nhat Security Rules cho database co ten...
+echo [1/2] Cap nhat Security Rules cho database (default)...
 call firebase deploy --only firestore:rules --project "%PROJECT_ID%"
 if errorlevel 1 (
   echo [LOI] Rules chua deploy. Dung lai.

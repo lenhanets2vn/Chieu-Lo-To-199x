@@ -2,12 +2,12 @@
 
 // This Cloud Function is installed separately from the Vite frontend.
 // It runs once when a host closes a room, not on every chat message.
-// Important: this project uses a *named* Firestore database.
+// This project uses the default Firestore database.
 const { onDocumentDeleted } = require('firebase-functions/v2/firestore');
 const { initializeApp } = require('firebase-admin/app');
 initializeApp();
 
-const DATABASE_ID = 'ai-studio-lthich199xlthoin-2cb02316-a219-47a4-9acb-21d18684e2a5';
+const DATABASE_ID = '(default)';
 
 exports.cleanupClosedRoom = onDocumentDeleted({
   document: 'rooms/{roomId}',

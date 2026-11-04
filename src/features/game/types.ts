@@ -30,7 +30,7 @@ export interface PlayerState {
   score: number;
 }
 
-export type GameStatus = 'WAITING' | 'COUNTDOWN' | 'CALLING' | 'PAUSED' | 'CHECKING_KINH' | 'GAME_OVER';
+export type GameStatus = 'WAITING' | 'COUNTDOWN' | 'CALLING' | 'CHECKING_KINH' | 'GAME_OVER';
 
 export interface GameSettings {
   mode: 'offline_bot' | 'online_friend';

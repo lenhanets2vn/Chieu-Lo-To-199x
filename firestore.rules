@@ -55,6 +55,20 @@ service cloud.firestore {
       allow update: if signedIn() && (
         (resource.data.hostId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostName']))
+        // The public room status must match a game-state update in the SAME batch.
+        || (resource.data.hostId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+          && request.resource.data.status in ['WAITING','COUNTDOWN','CALLING','GAME_OVER']
+          && getAfter(/databases/$(database)/documents/rooms/$(roomId)/state/current).data.status == request.resource.data.status)
+        // Atomic HOST handoff: departing HOST appoints an already joined member.
+        || (resource.data.hostId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hostId','hostName','memberCount'])
+          && request.resource.data.hostId != request.auth.uid
+          && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.resource.data.hostId))
+          && !existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
+          && getAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.resource.data.hostId)).data.isHost == true
+          && request.resource.data.memberCount == resource.data.memberCount - 1
+          && request.resource.data.memberCount >= 1)
         || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
           && !exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
           && existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid))
@@ -84,7 +98,8 @@ service cloud.firestore {
           && request.resource.data.status == 'WAITING';
         allow update: if stateId == 'current' && isHost(roomId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'status','currentBallNumber','calledHistory','winnerPlayerName','winnerRow','countdownEndsAt','updatedAt'
+            'status','currentBallNumber','calledHistory','winnerPlayerName','winnerRow','countdownEndsAt','updatedAt',
+            'audioPhase','audioTrack','audioStartedAt','soundpackId','roundId'
           ])
           && request.resource.data.calledHistory is list
           && request.resource.data.calledHistory.size() <= 90;
@@ -110,12 +125,21 @@ service cloud.firestore {
                   : get(/databases/$(database)/documents/rooms/$(roomId)).data.players.size() + 1)
             )
           );
-        allow update: if me(uid) && request.resource.data.id == uid
+        allow update: if (
+          // The old HOST may atomically promote only the selected successor.
+          (signedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid
+            && uid != request.auth.uid
+            && resource.data.isHost == false && request.resource.data.isHost == true
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isHost'])
+            && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == uid
+            && !existsAfter(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)))
+          || (me(uid) && request.resource.data.id == uid
           && request.resource.data.isHost == resource.data.isHost
           && request.resource.data.isBot == false
           && request.resource.data.tickets is list && request.resource.data.tickets.size() <= 1
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['joinedAt'])
-            || (!('joinedAt' in resource.data) && request.resource.data.joinedAt == request.time));
+            || (!('joinedAt' in resource.data) && request.resource.data.joinedAt == request.time)))
+        );
         allow delete: if me(uid) && (
           (isHost(roomId) && !existsAfter(/databases/$(database)/documents/rooms/$(roomId)))
           || (existsAfter(/databases/$(database)/documents/rooms/$(roomId))

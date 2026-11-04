@@ -12,6 +12,7 @@ import { MAX_SOUND_NUMBER, ALMOST_OVER_REMAINING } from './features/audio/soundp
 import { DEFAULT_SOUNDPACK, loadSoundpackCatalog, type SoundpackDefinition } from './features/audio/soundpackRegistry';
 import { ChatMessage } from './features/chat/yahooEmojis';
 import { GameRoom } from './features/room/types';
+import type { LiveRoomGame } from './features/room/firebaseRoomService';
 import { PlayerProfile, UnlockableItem } from './features/progression/progressionTypes';
 import { loadProfile, saveProfile, addExpAndRewards, UNLOCKABLE_CATALOG } from './features/progression/progressionStore';
 import { saveMatchRecord } from './features/history/historyStore';
@@ -45,7 +46,9 @@ import {
   subscribeToRoom,
   subscribeToRoomGameState,
   subscribeToRoomMembers,
+  subscribeToOwnRoomMember,
   publishRoomGameState,
+  publishRoomAudioEvent,
   publishOwnRoomTickets,
   leaveOnlineRoom,
   joinOnlineRoom,
@@ -149,7 +152,7 @@ export default function App() {
   });
 
   // Right sidebar tab in match view ('board' | 'players' | 'chat')
-  const [matchRightTab, setMatchRightTab] = useState<'board' | 'players' | 'chat'>('players');
+  const [matchRightTab, setMatchRightTab] = useState<'board' | 'players' | 'chat'>('board');
 
   // Core Game State
   const [gameState, setGameState] = useState<GameStatus>('WAITING');
@@ -175,6 +178,15 @@ export default function App() {
   const rosterRoomIdRef = useRef<string | null>(null);
   const handleGameOverRef = useRef<((name:string, isUser:boolean, row?:number[])=>void) | null>(null);
   const remoteRoundResetRef = useRef<(() => void) | null>(null);
+  const remoteAudioEventRef = useRef<((state: LiveRoomGame) => void) | null>(null);
+  const takeoverHostRef = useRef<((state: LiveRoomGame | null) => void) | null>(null);
+  const latestRoomStateRef = useRef<LiveRoomGame | null>(null);
+  const lastRemoteAudioKeyRef = useRef('');
+  const startRequestPendingRef = useRef(false);
+  const pendingHostTakeoverRef = useRef(false);
+  const remoteWinnerKeyRef = useRef('');
+  const pendingKinhClaimsRef = useRef<Array<{senderId:string;numbers:number[]}>>([]);
+  const validateKinhClaimRef = useRef<((claim: {senderId:string;numbers:number[]}) => boolean) | null>(null);
   const kinClaimPendingRef = useRef(false);
   const startSongForNextBallRef = useRef<((forcedNumber?:number)=>void) | null>(null);
   const phaseRef = useRef<'intro'|'song'|'near_end'|'outro'|'idle'>('idle');
@@ -259,15 +271,15 @@ export default function App() {
   const [selectionSecondsLeft, setSelectionSecondsLeft] = useState(30);
   const finalizeOnCountdownRef = useRef<(() => void) | null>(null);
   const [noWinnerEnding, setNoWinnerEnding] = useState(false);
-  const [noWinnerReason, setNoWinnerReason] = useState<'exhausted'|'manual'>('exhausted');
+  // End without a winner happens only after the final ball (never by a manual button).
   const updateAudioProgress = (_elapsed: number, _total: number) => { /* Hidden timeline: no React render per audio tick. */ };
   const onAudioFailure = (message: string) => {
     singingRef.current = false;
     setIsSingingSong(false);
     setIsIntroPlaying(false);
     setAudioError(message);
-    gameStatusRef.current = 'PAUSED';
-    setGameState('PAUSED');
+    // Do not silently pause the shared round when audio fails on one device.
+    // The host can retry the affected audio track without freezing other players.
   };
 
   // Tickets & Players (Max 30 players supported!)
@@ -477,30 +489,50 @@ export default function App() {
     if (!currentRoom?.id) return;
     const roomId = currentRoom.id;
     setRoomChatJoinedAt(null);
+    pendingKinhClaimsRef.current = [];
+    latestRoomStateRef.current = null;
+    pendingHostTakeoverRef.current = false;
+    lastRemoteAudioKeyRef.current = '';
     setMessages(previous => previous.filter(message => message.channel !== 'room'));
     const unsubRoom = subscribeToRoom(roomId, updated => {
-      if (!updated) { activeRoomRef.current = null; rosterRoomIdRef.current = null; setCurrentRoom(null); setCurrentView('MENU'); return; }
+      if (!updated) {
+        speechCaller.stop();
+        activeRoomRef.current = null; rosterRoomIdRef.current = null;
+        setCurrentRoom(null); setCurrentView('MENU'); return;
+      }
+      const wasHost = activeRoomRef.current?.hostId === auth.currentUser?.uid;
+      const becomesHost = !wasHost && updated.hostId === auth.currentUser?.uid;
       activeRoomRef.current = updated;
       setCurrentRoom(updated);
+      if (becomesHost) {
+        if (latestRoomStateRef.current) takeoverHostRef.current?.(latestRoomStateRef.current);
+        else pendingHostTakeoverRef.current = true;
+      }
     });
-    const unsubMembers = subscribeToRoomMembers(roomId, members => {
-      rosterRoomIdRef.current = roomId;
-      setPlayers(members);
-      playersRef.current = members;
-      const own = members.find(member => member.id === auth.currentUser?.uid) as (PlayerState & {joinedAt?: Timestamp}) | undefined;
-      if (own?.joinedAt instanceof Timestamp) {
+    // One-document listener for each guest. The full 100-member query is opened
+    // separately only for the HOST or when the player explicitly views the roster.
+    const unsubOwn = subscribeToOwnRoomMember(roomId, profile.id, own => {
+      if (!own) return;
+      if (own.joinedAt instanceof Timestamp) {
         setRoomChatJoinedAt(previous => previous?.roomId === roomId && previous.since.isEqual(own.joinedAt!)
           ? previous : { roomId, since: own.joinedAt! });
-      } else if (own && !legacyMemberMigratedRef.current.has(roomId)) {
+      } else if (!legacyMemberMigratedRef.current.has(roomId)) {
         legacyMemberMigratedRef.current.add(roomId);
-        void ensureRoomChatJoinTime(roomId, own.id).catch(() => {
+        void ensureRoomChatJoinTime(roomId, profile.id).catch(() => {
           setChatConnection(previous => ({ ...previous, room: 'error' }));
           setChatConnectionError(previous => ({ ...previous, room: 'Không mở được phiên trò chuyện trong phòng.' }));
         });
       }
-    }, err => console.warn('Không nạp được thành viên phòng:', err.code));
+    }, error => console.warn('Không tải được thành viên của bạn:', error.code));
     const unsubState = subscribeToRoomGameState(roomId, state => {
-      if (activeRoomRef.current?.hostId === auth.currentUser?.uid) return;
+      latestRoomStateRef.current = state;
+      if (activeRoomRef.current?.hostId === auth.currentUser?.uid) {
+        if (pendingHostTakeoverRef.current) {
+          pendingHostTakeoverRef.current = false;
+          takeoverHostRef.current?.(state);
+        }
+        return;
+      }
       const history = (state.calledHistory || []).filter(n => Number.isInteger(n) && n >= 1 && n <= 90);
       if (state.status === 'WAITING' && gameStatusRef.current !== 'WAITING') {
         remoteRoundResetRef.current?.();
@@ -526,12 +558,54 @@ export default function App() {
       } else if (state.status !== 'COUNTDOWN') setStartCountdownLeft(null);
       gameStatusRef.current = state.status;
       setGameState(state.status);
+      // Background tabs may miss the countdown timer; issue one catch-up ticket
+      // when CALLING arrives, never a per-number write.
+      if (state.status === 'CALLING' && !selectionLockedRef.current) {
+        finalizeOnCountdownRef.current?.();
+      }
+      if (state.status === 'WAITING') {
+        lastRemoteAudioKeyRef.current = '';
+        remoteWinnerKeyRef.current = '';
+        speechCaller.stop();
+      } else {
+        remoteAudioEventRef.current?.(state);
+      }
       if (state.status === 'GAME_OVER' && state.winnerPlayerName) {
+        const key = `${state.roundId || roomId}:${state.winnerPlayerName}`;
+        if (remoteWinnerKeyRef.current !== key) {
+          remoteWinnerKeyRef.current = key;
+          speechCaller.stop();
+          audioSynthesizer.playVictoryKinh();
+          confetti({ particleCount: 120, spread: 90, origin: { y: 0.6 } });
+        }
+        setNoWinnerEnding(false);
         setWinnerInfo({ name: state.winnerPlayerName, isUser: state.winnerPlayerName === displayNameRef.current, rowNumbers: state.winnerRow });
+      } else if (state.status === 'GAME_OVER' && !state.winnerPlayerName) {
+        setNoWinnerEnding(true);
       }
     }, err => console.warn('Không nạp được trạng thái online:', err.code));
-    return () => { if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current); unsubRoom(); unsubMembers(); unsubState(); };
-  }, [currentRoom?.id]);
+    return () => { if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current); unsubRoom(); unsubOwn(); unsubState(); };
+  }, [currentRoom?.id, profile.id]);
+
+  useEffect(() => {
+    const room = currentRoom;
+    if (!room || currentView !== 'GAME_MATCH') return;
+    // Host must validate KINH against tickets; guests need roster only while
+    // the players panel is open. This prevents N x 100 initial reads per lobby.
+    if (room.hostId !== profile.id && (!pageVisible || matchRightTab !== 'players')) return;
+    return subscribeToRoomMembers(room.id, members => {
+      rosterRoomIdRef.current = room.id;
+      playersRef.current = members;
+      setPlayers(members);
+      if (room.hostId === auth.currentUser?.uid && pendingKinhClaimsRef.current.length) {
+        const pending = pendingKinhClaimsRef.current;
+        pendingKinhClaimsRef.current = [];
+        for (const claim of pending) {
+          if (!validateKinhClaimRef.current?.(claim)) pendingKinhClaimsRef.current.push(claim);
+        }
+      }
+    }, error => console.warn('Không tải được danh sách phòng:', error.code));
+  }, [currentRoom?.id, currentRoom?.hostId, profile.id, currentView, matchRightTab, pageVisible]);
 
   // Chat has its own visibility-scoped listener, disconnected without affecting gameplay.
   useEffect(() => {
@@ -552,30 +626,39 @@ export default function App() {
   }, [readyUserId, pageVisible, isWorldChatOpen, currentRoom?.id, roomChatJoinedAt, currentView, matchRightTab, consumeVipChatEffects]);
 
   useEffect(() => {
-    if (!pageVisible || !currentRoom?.id || currentView !== 'GAME_MATCH') return;
+    if (!pageVisible || !currentRoom?.id || currentView !== 'GAME_MATCH' || gameState !== 'CALLING') return;
     return subscribeToRoomReactions(currentRoom.id, reaction => {
       if (reaction.senderId !== auth.currentUser?.uid) {
         addFloatingEmote(reaction.senderName, reaction.emoji, reaction.label);
       }
     });
-  }, [currentRoom?.id, currentView, pageVisible, addFloatingEmote]);
+  }, [currentRoom?.id, currentView, pageVisible, gameState, addFloatingEmote]);
 
-  // Only the host listens to KINH claims; each claim is one event, NOT a polling loop.
+  // A KINH claim may arrive at the new HOST before the 100-member roster.
+  // Retain it until the roster snapshot arrives rather than silently discarding it.
+  validateKinhClaimRef.current = claim => {
+    if (gameStatusRef.current !== 'CALLING') return true;
+    const member = playersRef.current.find(p => p.id === claim.senderId);
+    if (!member || !member.tickets?.length) return false;
+    if (member.isBot) return true;
+    const calledSet = new Set(calledHistoryRef.current);
+    const won = member.tickets.some(ticket => ticket.grid.some(row => {
+      const chosen = row.map(cell => cell.value).filter((n): n is number => n !== null);
+      return chosen.length === 5 && chosen.every(n => calledSet.has(n))
+        && chosen.every(n => claim.numbers.includes(n)) && claim.numbers.every(n => chosen.includes(n));
+    }));
+    if (won) handleGameOverRef.current?.(member.name, member.id === profile.id, claim.numbers);
+    return true;
+  };
   useEffect(() => {
-    if (!currentRoom?.id || currentRoom.hostId !== profile.id) return;
+    if (!currentRoom?.id || currentRoom.hostId !== profile.id || gameState !== 'CALLING') return;
     return subscribeToRoomKinhClaims(currentRoom.id, claim => {
-      if (gameStatusRef.current !== 'CALLING' && gameStatusRef.current !== 'PAUSED') return;
-      const member = playersRef.current.find(p => p.id === claim.senderId);
-      if (!member || member.isBot || !member.tickets?.length) return;
-      const calledSet = new Set(calledHistoryRef.current);
-      const won = member.tickets.some(ticket => ticket.grid.some(row => {
-        const chosen = row.map(cell => cell.value).filter((n): n is number => n !== null);
-        return chosen.length === 5 && chosen.every(n => calledSet.has(n))
-          && chosen.every(n => claim.numbers.includes(n)) && claim.numbers.every(n => chosen.includes(n));
-      }));
-      if (won) handleGameOverRef.current?.(member.name, member.id === profile.id, claim.numbers);
+      if (!validateKinhClaimRef.current?.(claim)) {
+        pendingKinhClaimsRef.current.push(claim);
+        if (pendingKinhClaimsRef.current.length > 20) pendingKinhClaimsRef.current.shift();
+      }
     });
-  }, [currentRoom?.id, currentRoom?.hostId, profile.id]);
+  }, [currentRoom?.id, currentRoom?.hostId, profile.id, gameState]);
 
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
 
@@ -686,7 +769,8 @@ export default function App() {
   /** Chốt đúng 5 số. Nếu hết giờ, giữ số người chơi đã chọn và bốc bù số còn thiếu. */
   /** Khóa bộ vé chỉ sau khi tất cả bộ số đã đủ. Đủ 30/120 giây tự điền phần còn thiếu. */
   const finalizePacks = useCallback((sets: number[][]) => {
-    if (selectionLockedRef.current || !['WAITING', 'COUNTDOWN'].includes(gameStatusRef.current)) return;
+    if (selectionLockedRef.current || !['WAITING', 'COUNTDOWN'].includes(gameStatusRef.current)
+        && !(activeRoomRef.current && gameStatusRef.current === 'CALLING')) return;
     const complete = Array.from({ length: packCount }, (_, i) =>
       pickFiveUnique(MAX_SOUND_NUMBER, sets[i] ?? [])
     );
@@ -719,7 +803,7 @@ export default function App() {
   }, [finalizePacks, chosenPacks, selectedFive]);
 
   const choosePackCount = useCallback((count: 1 | 5) => {
-    if (selectionLockedRef.current || gameStatusRef.current !== 'WAITING') return;
+    if (selectionLockedRef.current || !['WAITING','COUNTDOWN'].includes(gameStatusRef.current)) return;
     setPackCount(1);
     setSettings(previous => ({ ...previous, ticketCount: 1 }));
     localStorage.setItem('loto_pack_count', '1');
@@ -731,28 +815,28 @@ export default function App() {
   }, []);
 
   const chooseFiveMode = useCallback((mode: 'random' | 'manual') => {
-    if (selectionLockedRef.current || gameStatusRef.current !== 'WAITING') return;
+    if (selectionLockedRef.current || !['WAITING','COUNTDOWN'].includes(gameStatusRef.current)) return;
     setSelectionMode(mode);
     if (mode === 'random') finalizePacks([]);
     else { setChosenPacks([]); setSelectedFive([]); }
   }, [finalizePacks]);
 
   const toggleSelectedFive = useCallback((n: number) => {
-    if (selectionLockedRef.current || gameStatusRef.current !== 'WAITING') return;
+    if (selectionLockedRef.current || !['WAITING','COUNTDOWN'].includes(gameStatusRef.current)) return;
     setSelectedFive(previous => previous.includes(n)
       ? previous.filter(v => v !== n)
       : previous.length < 5 && n >= 1 && n <= MAX_SOUND_NUMBER ? [...previous, n].sort((a,b)=>a-b) : previous);
   }, []);
 
   const confirmCurrentPack = useCallback(() => {
-    if (selectionLockedRef.current || gameStatusRef.current !== 'WAITING' || selectedFive.length !== 5) return;
+    if (selectionLockedRef.current || !['WAITING','COUNTDOWN'].includes(gameStatusRef.current) || selectedFive.length !== 5) return;
     const newPacks = [...chosenPacks, [...selectedFive]];
     if (newPacks.length >= packCount) finalizePacks(newPacks);
     else { setChosenPacks(newPacks); setSelectedFive([]); }
   }, [chosenPacks, selectedFive, packCount, finalizePacks]);
 
   useEffect(() => {
-    if (currentView !== 'GAME_MATCH' || gameState !== 'WAITING' || selectionLocked) return;
+    if (currentView !== 'GAME_MATCH' || gameState !== 'WAITING' || selectionLocked || activeRoomRef.current) return;
     const timer = window.setInterval(() => {
       const seconds = Math.max(0, Math.ceil((selectionDeadlineRef.current - Date.now()) / 1000));
       setSelectionSecondsLeft(seconds);
@@ -776,7 +860,6 @@ export default function App() {
     setIsIntroPlaying(false);
     setTrackRevealed(false);
     setNoWinnerEnding(false);
-    setNoWinnerReason('exhausted');
     setAudioError(null);
     setAudioLabel('Chờ bắt đầu ván');
 
@@ -907,7 +990,7 @@ export default function App() {
     setPlayers(updatedPlayers);
   }, [profile.characterId]);
 
-  const playNoWinnerOutro = useCallback((reason: 'exhausted'|'manual' = 'exhausted') => {
+  const playNoWinnerOutro = useCallback(() => {
     if (gameStatusRef.current === 'GAME_OVER') return;
     gameStatusRef.current = 'GAME_OVER';
     phaseRef.current = 'outro';
@@ -920,15 +1003,20 @@ export default function App() {
       void publishRoomGameState(liveRoom.id, { status: 'GAME_OVER', currentBallNumber: calledHistoryRef.current.at(-1) || null, calledHistory: calledHistoryRef.current });
     }
     setNoWinnerEnding(true);
-    setNoWinnerReason(reason);
     setAudioLabel('Hết nhạc — chưa ai KINH');
 
     setAudioError(null);
     speechCaller.playOutro({
+      onStart: () => {
+        if (liveRoom?.hostId === auth.currentUser?.uid) {
+          void publishRoomAudioEvent(liveRoom.id, 'outro', 'outro', speechCaller.getSoundpack().id)
+            .catch(() => setAudioError('Không đồng bộ được nhạc hạ màn.'));
+        }
+      },
       onProgress: updateAudioProgress,
       onError: message => setAudioError(message)
     });
-    handleSendMessage(reason === 'manual' ? '🎺 Gánh hát kết thúc ván, chưa có ai KINH!' : '🎺 Hết nhạc! Cả 90 số đã kêu mà chưa ai KINH. Ván chơi khép lại!', 'room');
+    // End-of-round screen is enough; avoid an extra global chat write/read fan-out.
   }, []);
 
   const queueNextStepRef = useRef<(() => void) | null>(null);
@@ -946,6 +1034,12 @@ export default function App() {
         setSingingNumber(null);
         setAudioError(null);
         setAudioLabel('Gánh hát đang hò một con số bí mật...');
+        const liveRoom = activeRoomRef.current;
+        if (liveRoom?.hostId === auth.currentUser?.uid) {
+          void publishRoomAudioEvent(liveRoom.id, 'number', String(num).padStart(2, '0'), speechCaller.getSoundpack().id,
+            calledHistoryRef.current.length === 0)
+            .catch(() => setAudioError('Chưa gửi được nhạc hò số cho phòng. Kiểm tra kết nối.'));
+        }
         // Advance queue next track seamlessly
         queueNextStepRef.current?.();
       },
@@ -974,6 +1068,11 @@ export default function App() {
           setGameState('GAME_OVER');
           setNoWinnerEnding(true);
           setAudioLabel('Hết nhạc — chưa ai KINH');
+          const liveRoom = activeRoomRef.current;
+          if (liveRoom?.hostId === auth.currentUser?.uid) {
+            void publishRoomAudioEvent(liveRoom.id, 'outro', 'outro', speechCaller.getSoundpack().id)
+              .catch(() => setAudioError('Không đồng bộ được nhạc hạ màn.'));
+          }
         },
         onProgress: updateAudioProgress,
         onError: onAudioFailure
@@ -990,6 +1089,11 @@ export default function App() {
           setIsSingingSong(true);
           setTrackRevealed(false);
           setAudioLabel('Nhạc báo sắp hết số');
+          const liveRoom = activeRoomRef.current;
+          if (liveRoom?.hostId === auth.currentUser?.uid) {
+            void publishRoomAudioEvent(liveRoom.id, 'near_end', 'near_end', speechCaller.getSoundpack().id)
+              .catch(() => setAudioError('Không đồng bộ được nhạc gần kết.'));
+          }
           const nextBall = engineRef.current.drawNextBall();
           if (nextBall) {
             speechCaller.queueNextTrack(
@@ -1030,6 +1134,11 @@ export default function App() {
     speechCaller.playNearEnd({
       onStart: () => {
         setAudioLabel('Nhạc báo sắp hết số');
+        const liveRoom = activeRoomRef.current;
+        if (liveRoom?.hostId === auth.currentUser?.uid) {
+          void publishRoomAudioEvent(liveRoom.id, 'near_end', 'near_end', speechCaller.getSoundpack().id)
+            .catch(() => setAudioError('Không đồng bộ được nhạc gần kết.'));
+        }
         const next = engineRef.current.drawNextBall();
         if (next) {
           speechCaller.queueNextTrack(
@@ -1115,11 +1224,14 @@ export default function App() {
     setAudioLabel('Đang phát nhạc mở màn...');
 
     setAudioError(null);
-    if (liveRoom) void handleSendMessage('🏮 Trống hội nổi lên! Nghe hết nhạc dạo rồi gánh hát bắt đầu kêu số!', 'room');
-
+    // Announcements already appear on the game board; avoid an extra chat write.
     speechCaller.playIntro({
       onStart: () => {
         setAudioLabel('Nhạc mở màn');
+        if (liveRoom?.hostId === auth.currentUser?.uid) {
+          void publishRoomAudioEvent(liveRoom.id, 'intro', 'intro', speechCaller.getSoundpack().id)
+            .catch(() => setAudioError('Không đồng bộ được nhạc mở màn.'));
+        }
         // Pre-draw Ball 1 and queue it ahead of time into WebAudio for 100% gapless handoff
         const ball1 = engineRef.current.drawNextBall();
         if (ball1) {
@@ -1146,54 +1258,138 @@ export default function App() {
     });
   }, [settings.voiceCaller, musicVolume, createNumberChantCallbacks]);
 
-  const handleStartGameRound = useCallback(() => {
-    if (gameStatusRef.current !== 'WAITING') return;
+  // Guest audio follows server track events, never rolls local balls. One track
+  // transition = one Firestore state write, with no playback-progress writes.
+  remoteAudioEventRef.current = (state: LiveRoomGame) => {
+    if (!activeRoomRef.current || activeRoomRef.current.hostId === auth.currentUser?.uid) return;
+    if (!state.audioTrack || !state.audioPhase || state.audioPhase === 'idle') return;
+    if (!(state.audioStartedAt instanceof Timestamp)) return;
+    const stamp = state.audioStartedAt.toMillis();
+    const key = `${state.roundId || ''}:${state.audioPhase}:${state.audioTrack}:${stamp}`;
+    if (key === lastRemoteAudioKeyRef.current) return;
+    lastRemoteAudioKeyRef.current = key;
+    const desiredPack = soundpacks.find(pack => pack.id === state.soundpackId) || DEFAULT_SOUNDPACK;
+    speechCaller.stop();
+    if (speechCaller.getSoundpack().id !== desiredPack.id) speechCaller.setSoundpack(desiredPack);
+    speechCaller.setEnabled(settings.voiceCaller);
+    speechCaller.setVolume(musicVolume);
+    const phase = state.audioPhase;
+    setAudioError(null);
+    setIsIntroPlaying(phase === 'intro');
+    setIsSingingSong(phase === 'number' || phase === 'near_end');
+    setAudioLabel(phase === 'intro' ? 'Nhạc mở màn trong phòng' : phase === 'number'
+      ? 'Đang hò số trong phòng...' : phase === 'near_end' ? 'Nhạc báo sắp hết số' : 'Nhạc hạ màn');
+    // Server Timestamp reduces phase skew, but browser autoplay / network delay
+    // means sample-accurate multi-device audio synchronization is not guaranteed.
+    const offsetSeconds = Math.max(0, (Date.now() - stamp) / 1000);
+    speechCaller.playSyncedTrack(state.audioTrack, offsetSeconds, {
+      onError: () => setAudioError('Thiết bị chưa phát được nhạc. Bấm “Bật nhạc phòng” để nghe.'),
+      onSongEnd: () => {
+        setIsIntroPlaying(false);
+        setIsSingingSong(false);
+      }
+    });
+  };
+
+  takeoverHostRef.current = (state: LiveRoomGame | null) => {
+    if (!state || activeRoomRef.current?.hostId !== auth.currentUser?.uid) return;
+    speechCaller.stop();
+    lastRemoteAudioKeyRef.current = '';
+    const history = (state.calledHistory || []).filter(n => Number.isInteger(n) && n >= 1 && n <= 90);
+    engineRef.current.reset(MAX_SOUND_NUMBER);
+    history.forEach(n => engineRef.current.confirmCurrentBall(n));
+    calledHistoryRef.current = history;
+    gameStatusRef.current = state.status;
+    setGameState(state.status);
+    setAudioLabel('Bạn là HOST mới · tiếp quản chiếu hội');
+    if (startCountdownTimerRef.current) clearTimeout(startCountdownTimerRef.current);
+    if (state.status === 'COUNTDOWN') {
+      const deadline = state.countdownEndsAt || Date.now();
+      if (state.audioPhase === 'intro') {
+        if (!selectionLockedRef.current) {
+          // Temporarily keep COUNTDOWN state for the existing finalizer.
+          finalizeOnCountdownRef.current?.();
+        }
+        beginIntroAfterCountdown(); // Replay intro on handoff; avoid a silent round.
+      } else {
+        startCountdownTimerRef.current = setTimeout(() => {
+          if (!selectionLockedRef.current) finalizeOnCountdownRef.current?.();
+          beginIntroAfterCountdown();
+        }, Math.max(0, deadline - Date.now()));
+      }
+    } else if (state.status === 'CALLING') {
+      if (!selectionLockedRef.current) finalizeOnCountdownRef.current?.();
+      // A track interrupted by the former host is replayed from a fresh new
+      // random number; previously revealed numbers are preserved and never reused.
+      setTimeout(() => startSongForNextBallRef.current?.(), 150);
+    }
+  };
+
+  const handleEnableRoomAudio = () => {
+    void speechCaller.unlock().then(() => {
+      lastRemoteAudioKeyRef.current = '';
+      if (latestRoomStateRef.current) remoteAudioEventRef.current?.(latestRoomStateRef.current);
+    }).catch(() => setAudioError('Trình duyệt đang chặn âm thanh. Hãy kiểm tra quyền phát nhạc của trang.'));
+  };
+
+  const handleStartGameRound = useCallback(async () => {
+    if (gameStatusRef.current !== 'WAITING' || startRequestPendingRef.current) return;
     const room = activeRoomRef.current;
     if (room && room.hostId !== auth.currentUser?.uid) return;
-    // maxPlayers is capacity, NOT a minimum start requirement.
-    // A ten-second countdown gives every connected member time to choose five numbers.
-    const endsAt = Date.now() + 10_000;
-    gameStatusRef.current = 'COUNTDOWN';
-    setGameState('COUNTDOWN');
-    setStartCountdownLeft(10);
-    setAudioLabel('Chuẩn bị vào ván · 10 giây');
-    if (room) void publishRoomGameState(room.id, {
-      status: 'COUNTDOWN', countdownEndsAt: endsAt, currentBallNumber: null, calledHistory: []
-    }).catch(error => console.warn('Không công bố được thời gian bắt đầu:', error));
-    if (startCountdownTimerRef.current) clearTimeout(startCountdownTimerRef.current);
-    startCountdownTimerRef.current = setTimeout(() => {
-      startCountdownTimerRef.current = null;
-      if (!selectionLockedRef.current) finalizeOnCountdownRef.current?.();
-      beginIntroAfterCountdown();
-    }, 10_000);
+    startRequestPendingRef.current = true;
+    // A direct user gesture unlocks autoplay on the HOST's browser.
+    void speechCaller.unlock().catch(() => {});
+    try {
+      const endsAt = Date.now() + 10_000;
+      if (room) {
+        await publishRoomGameState(room.id, {
+          status: 'COUNTDOWN', countdownEndsAt: endsAt,
+          currentBallNumber: null, calledHistory: [],
+          winnerPlayerName: '', winnerRow: [], audioPhase: 'idle',
+          soundpackId: speechCaller.getSoundpack().id,
+          roundId: crypto.randomUUID()
+        });
+      }
+      gameStatusRef.current = 'COUNTDOWN';
+      setGameState('COUNTDOWN');
+      setStartCountdownLeft(Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)));
+      setAudioLabel('Chuẩn bị vào ván · 10 giây');
+      if (startCountdownTimerRef.current) clearTimeout(startCountdownTimerRef.current);
+      startCountdownTimerRef.current = setTimeout(() => {
+        startCountdownTimerRef.current = null;
+        if (!selectionLockedRef.current) finalizeOnCountdownRef.current?.();
+        beginIntroAfterCountdown();
+      }, Math.max(0, endsAt - Date.now()));
+    } catch (error) {
+      setAudioError(error instanceof Error && 'code' in error && (error as {code?:string}).code === 'permission-denied'
+        ? 'Chưa có quyền đồng bộ bắt đầu ván. Cần triển khai Rules mới.'
+        : 'Không bắt đầu được ván online. Kiểm tra kết nối rồi thử lại.');
+    } finally {
+      startRequestPendingRef.current = false;
+    }
   }, [beginIntroAfterCountdown]);
 
   useEffect(() => {
     if (gameState !== 'COUNTDOWN' || startCountdownLeft === null) return;
-    const timer = window.setInterval(() => setStartCountdownLeft(value => value === null ? null : Math.max(0, value - 1)), 1000);
+    const timer = window.setInterval(() => {
+      const deadline = latestRoomStateRef.current?.countdownEndsAt;
+      if (activeRoomRef.current && typeof deadline === 'number') {
+        setStartCountdownLeft(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+      } else {
+        setStartCountdownLeft(value => value === null ? null : Math.max(0, value - 1));
+      }
+    }, 1000);
     return () => clearInterval(timer);
   }, [gameState, startCountdownLeft === null]);
-
-  const handleAudioPauseToggle = () => {
-    if (gameStatusRef.current === 'PAUSED') {
-      gameStatusRef.current = phaseRef.current === 'intro' ? 'COUNTDOWN' : 'CALLING';
-      setGameState(gameStatusRef.current);
-      speechCaller.resume().then(() => setAudioError(null)).catch(e => onAudioFailure(String(e)));
-    } else if (gameStatusRef.current === 'CALLING' || gameStatusRef.current === 'COUNTDOWN') {
-      speechCaller.pause();
-      gameStatusRef.current = 'PAUSED';
-      setGameState('PAUSED');
-    }
-  };
 
   const handleRetryAudio = () => {
     if (!audioError) return;
     const phase = phaseRef.current;
     setAudioError(null);
     if (phase === 'intro') {
-      gameStatusRef.current = 'WAITING';
-      setGameState('WAITING');
-      handleStartGameRound();
+      gameStatusRef.current = 'COUNTDOWN';
+      setGameState('COUNTDOWN');
+      beginIntroAfterCountdown();
     } else if (phase === 'song') {
       gameStatusRef.current = 'CALLING';
       setGameState('CALLING');
@@ -1217,7 +1413,7 @@ export default function App() {
 
   // CHECK KINH BUTTON
   const handleUserCallKinh = () => {
-    if ((gameStatusRef.current !== 'CALLING' && gameStatusRef.current !== 'PAUSED') || !selectionLockedRef.current) return;
+    if (gameStatusRef.current !== 'CALLING' || !selectionLockedRef.current) return;
     const calledSet = new Set(calledHistoryRef.current);
     let validKinh = false;
     let winningRowNums: number[] = [];
@@ -1366,10 +1562,12 @@ export default function App() {
       hasKinh: false, score: profile.coins
     };
     try {
+      void speechCaller.unlock().catch(() => {});
       const room = await createOnlineRoom(data, hostPlayer);
       rosterRoomIdRef.current = null;
       activeRoomRef.current = room;
       setCurrentRoom(room);
+      setMatchRightTab('board');
       setSettings(prev => ({ ...prev, mode: 'online_friend', callIntervalSeconds: room.callIntervalSeconds }));
       startNewGame('online_friend', room);
     } catch (error) {
@@ -1384,6 +1582,7 @@ export default function App() {
       characterId: profile.characterId, tickets: [], isReady: true,
       hasKinh: false, score: profile.coins
     };
+    void speechCaller.unlock().catch(() => {});
     const result = await joinOnlineRoom(code, joining, passwordInput);
     if (!result.success || !result.room) {
       throw new Error(result.error || 'Không vào được phòng online.');
@@ -1391,17 +1590,34 @@ export default function App() {
     rosterRoomIdRef.current = null;
     activeRoomRef.current = result.room;
     setCurrentRoom(result.room);
+    setMatchRightTab('board');
     setSettings(prev => ({ ...prev, mode: 'online_friend', callIntervalSeconds: result.room!.callIntervalSeconds }));
     startNewGame('online_friend', result.room);
   };
 
-  const exitOnlineRoom = () => {
+  /** Do not leave UI optimistically: a failed HOST handoff must be retryable. */
+  const exitOnlineRoom = async (): Promise<boolean> => {
     const oldRoom = activeRoomRef.current;
-    if (oldRoom) void leaveOnlineRoom(oldRoom.id, profile.id).catch(error => console.warn('Lỗi rời phòng:', error));
+    if (oldRoom) {
+      try {
+        await leaveOnlineRoom(oldRoom.id, profile.id, oldRoom.hostId === profile.id);
+      } catch (error) {
+        setRoomCloudError('Không chuyển được HOST hoặc không rời được phòng. Kiểm tra kết nối rồi thử lại.');
+        setAudioError('Không rời được phòng. Vui lòng thử lại.');
+        return false;
+      }
+    }
+    speechCaller.stop();
+    if (startCountdownTimerRef.current) clearTimeout(startCountdownTimerRef.current);
+    if (autoTicketTimerRef.current) clearTimeout(autoTicketTimerRef.current);
     activeRoomRef.current = null;
     rosterRoomIdRef.current = null;
+    latestRoomStateRef.current = null;
     setCurrentRoom(null);
     setSettings(prev => ({ ...prev, mode: 'offline_bot' }));
+    gameStatusRef.current = 'WAITING';
+    setCurrentView('MENU');
+    return true;
   };
 
   // KINH khi ít nhất 1 trong 1 hoặc 5 bộ đã đủ 5 số được HÒ & HIỂN THỊ.
@@ -1412,7 +1628,7 @@ export default function App() {
     Math.max(best, ticket.grid.flat().filter(cell => cell.value !== null && calledNumbers.has(cell.value)).length), 0
   );
   const canCallKinh = selectionLocked && hasAllFiveCalled
-    && (gameState === 'CALLING' || gameState === 'PAUSED');
+    && gameState === 'CALLING';
 
   const activeChar = getCharacterById(profile.characterId);
   const activeMarker = UNLOCKABLE_CATALOG.find(i => i.id === profile.activeMarkerId) || UNLOCKABLE_CATALOG[0];
@@ -1527,7 +1743,7 @@ export default function App() {
       <header className={`flex items-center justify-between gap-8 px-4 py-2.5 ${currentTheme.header} shrink-0 z-30`}>
         <a 
           href="#"
-          onClick={(e) => { e.preventDefault(); speechCaller.stop(); gameStatusRef.current = 'WAITING'; setCurrentView('MENU'); }}
+          onClick={(e) => { e.preventDefault(); void exitOnlineRoom(); }}
           className={`flex items-center gap-2 text-base sm:text-lg font-black tracking-tight ${currentTheme.titleColor} font-pixel whitespace-nowrap shrink-0 hover:text-yellow-400`}
         >
           <span>{currentTheme.bannerIcon}</span>
@@ -1535,7 +1751,7 @@ export default function App() {
         </a>
 
         <nav className="hidden md:flex items-center gap-5 text-xs font-bold text-amber-200/90 whitespace-nowrap shrink-0">
-          <button onClick={() => { speechCaller.stop(); gameStatusRef.current = 'WAITING'; exitOnlineRoom(); setCurrentView('MENU'); }} className="hover:text-yellow-300 cursor-pointer flex items-center gap-1">
+          <button onClick={() => { void exitOnlineRoom(); }} className="hover:text-yellow-300 cursor-pointer flex items-center gap-1">
             <span>Menu Chính</span>
           </button>
           <button onClick={() => setIsCharModalOpen(true)} className="hover:text-yellow-300 cursor-pointer flex items-center gap-1">
@@ -1567,10 +1783,10 @@ export default function App() {
       {/* V7 permanent controls: shown BOTH on MENU and inside GAME_MATCH.
           This is the real App root, guaranteed mounted whenever App.tsx renders. */}
       <LotoAudioControls
-        visible={currentView === 'GAME_MATCH' && (gameState === 'COUNTDOWN' || gameState === 'CALLING' || gameState === 'PAUSED')}
+        visible={currentView === 'GAME_MATCH' && (gameState === 'COUNTDOWN' || gameState === 'CALLING')}
         enabled={settings.voiceCaller}
         volume={musicVolume}
-        playing={gameState === 'CALLING' || gameState === 'COUNTDOWN' || gameState === 'PAUSED'}
+        playing={gameState === 'CALLING' || gameState === 'COUNTDOWN'}
         onToggle={handleMusicToggle}
         onVolumeChange={handleMusicVolume}
       />
@@ -1579,7 +1795,10 @@ export default function App() {
       {currentView === 'MENU' && (
         <MainMenu
           profile={profile}
-          onQuickPlay={() => { exitOnlineRoom(); startNewGame('offline_bot'); }}
+          onQuickPlay={() => { void (async () => {
+            if (activeRoomRef.current && !(await exitOnlineRoom())) return;
+            startNewGame('offline_bot');
+          })(); }}
           onOpenRoomModal={() => setIsRoomModalOpen(true)}
           onOpenCharacters={() => setIsCharModalOpen(true)}
           onOpenShop={() => setIsShopModalOpen(true)}
@@ -1597,7 +1816,7 @@ export default function App() {
           {/* Sub Toolbar */}
           <div className="bg-[#1e0e06] px-4 py-1.5 border-b border-amber-900/60 flex flex-wrap items-center justify-between text-xs gap-2">
             <div className="flex items-center gap-3">
-              <RetroButton size="sm" variant="default" onClick={() => { speechCaller.stop(); gameStatusRef.current = 'WAITING'; exitOnlineRoom(); setCurrentView('MENU'); }} icon={<ArrowLeft className="w-3 h-3" />}>
+              <RetroButton size="sm" variant="default" onClick={() => { void exitOnlineRoom(); }} icon={<ArrowLeft className="w-3 h-3" />}>
                 Menu
               </RetroButton>
 
@@ -1636,7 +1855,7 @@ export default function App() {
                     </span>
                   </div>
                   <div className="text-[11px] text-amber-400/80 font-medium">
-                    {activeChar.name} ({activeChar.title}) · Chiếu hội: {players.length} bạn chơi
+                    {activeChar.name} ({activeChar.title}) · Chiếu hội: {currentRoom?.memberCount ?? players.length} bạn chơi
                   </div>
                 </div>
               </div>
@@ -1652,29 +1871,32 @@ export default function App() {
                   {skillCooldown > 0 ? `Hồi (${skillCooldown}s)` : `Tuyệt Kỹ: ${activeChar.activeSkill.name}`}
                 </RetroButton>
 
+                {currentRoom && (
+                  <button type="button" onClick={() => {
+                    if (currentRoom.hostId === profile.id && !window.confirm('Rời phòng? Nếu còn người, quyền HOST sẽ được chuyển tự động.')) return;
+                    void exitOnlineRoom();
+                  }} className="rounded-lg border border-amber-500 bg-[#4e2c1a] px-3 py-2 text-xs font-bold text-amber-100 cursor-pointer">
+                    {currentRoom.hostId === profile.id ? '🚪 Rời phòng · chuyển HOST' : '🚪 Rời phòng'}
+                  </button>
+                )}
                 <RetroButton
                   size="md"
                   variant="default"
                   onClick={() => startNewGame()}
-                  disabled={settings.mode === 'online_friend' && !!currentRoom && currentRoom.hostId !== profile.id}
+                  disabled={(gameState !== 'WAITING' && gameState !== 'GAME_OVER') || (settings.mode === 'online_friend' && !!currentRoom && currentRoom.hostId !== profile.id)}
                   icon={<RotateCcw className="w-3.5 h-3.5" />}
                 >
                   Ván Mới
                 </RetroButton>
-                {(gameState === 'CALLING' || gameState === 'PAUSED') &&
-                 (settings.mode === 'offline_bot' || !currentRoom || currentRoom.hostId === profile.id) && (
-                  <button
-                    onClick={() => { if (window.confirm('Kết thúc ván khi chưa có ai KINH và phát nhạc hạ màn?')) playNoWinnerOutro('manual'); }}
-                    className="px-2 py-1 rounded text-xs text-amber-200 bg-amber-950 border border-amber-800 hover:bg-amber-900 cursor-pointer"
-                  >
-                    🎺 Kết thúc chưa KINH
-                  </button>
-                )}
               </div>
             </div>
 
-            {audioError && <div role="alert" className="rounded-lg border border-red-600 bg-red-950 p-2 text-red-200 flex gap-3 items-center">Không thể phát âm thanh. <button onClick={handleRetryAudio} className="underline">Thử lại</button></div>}
-            {(gameState === 'CALLING' || gameState === 'COUNTDOWN' || (gameState === 'PAUSED' && !audioError)) && <button onClick={handleAudioPauseToggle} className="self-start bg-amber-700 text-white rounded px-4 py-2 font-bold">{gameState === 'PAUSED' ? '▶ Tiếp tục' : '⏸ Tạm dừng'}</button>}
+            {audioError && <div role="alert" className="rounded-lg border border-red-600 bg-red-950 p-2 text-red-200 flex gap-3 items-center">{audioError} <button onClick={currentRoom && currentRoom.hostId !== profile.id ? handleEnableRoomAudio : handleRetryAudio} className="underline">Thử lại</button></div>}
+            {currentRoom && currentRoom.hostId !== profile.id && (gameState === 'COUNTDOWN' || gameState === 'CALLING') && (
+              <button type="button" onClick={handleEnableRoomAudio} className="self-start rounded-lg border border-amber-400 bg-amber-900 px-3 py-2 text-amber-100 text-xs font-bold cursor-pointer">
+                🔊 Bật nhạc phòng / Đồng bộ lại âm thanh
+              </button>
+            )}
 
             {/* LOTTERY BALL CAGE ANIMATION */}
             <BallCageAnimation
@@ -1706,11 +1928,11 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1">
               {/* TICKET COLUMN (7 COLS) */}
               <div className="lg:col-span-7 flex flex-col gap-3">
-                {gameState === 'WAITING' && (
+                {(gameState === 'WAITING' || (gameState === 'COUNTDOWN' && !selectionLocked)) && (
                   <FiveNumberPicker
                     mode={selectionMode}
                     selected={selectedFive}
-                    secondsLeft={selectionSecondsLeft}
+                    secondsLeft={gameState === 'COUNTDOWN' ? (startCountdownLeft ?? 0) : selectionSecondsLeft}
                     locked={selectionLocked}
                     packCount={packCount}
                     completedPacks={chosenPacks}
@@ -1741,7 +1963,7 @@ export default function App() {
                 ))}
 
                 {/* KINH disabled & faded until the complete set of five has actually been revealed. */}
-                {(gameState === 'CALLING' || gameState === 'PAUSED') && (
+                {gameState === 'CALLING' && (
                   <div className="p-3 bg-[#241208] border-2 border-red-600 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-3 shadow-lg">
                     <div className="text-center sm:text-left">
                       <span className="text-sm font-black text-yellow-300 block font-pixel text-base">
@@ -1922,7 +2144,7 @@ export default function App() {
           <div className="max-w-md w-full bg-[#28160b] text-center text-amber-100 rounded-xl border-2 border-amber-500 p-7 shadow-xl">
             <div className="text-4xl mb-3">🎺</div>
             <h2 className="text-2xl font-black text-amber-300 mb-2">HẾT NHẠC — CHƯA CÓ AI KINH</h2>
-            <p className="text-sm leading-6 mb-5">{noWinnerReason === 'manual' ? 'Chủ chiếu đã kết thúc ván khi chưa ai KINH. Gánh hát phát nhạc hạ màn.' : 'Gánh hát đã gọi hết 90 số và chưa ai KINH. Đang phát nhạc hạ màn.'} Mời bà con thử vận may ở ván mới!</p>
+            <p className="text-sm leading-6 mb-5">Gánh hát đã gọi hết 90 số mà chưa ai KINH. Đang phát nhạc hạ màn. Mời bà con thử vận may ở ván mới!</p>
             {audioError && <p className="text-xs text-red-300 mb-3">{audioError}</p>}
             <RetroButton size="lg" variant="gold" disabled={!!currentRoom && currentRoom.hostId !== profile.id} onClick={() => startNewGame()}>{!!currentRoom && currentRoom.hostId !== profile.id ? 'Chờ chủ phòng mở ván mới' : 'Chơi Ván Mới'}</RetroButton>
           </div>
@@ -1949,7 +2171,7 @@ export default function App() {
         }}
         onLogout={async () => {
           const room = activeRoomRef.current;
-          if (room) await leaveOnlineRoom(room.id, profile.id).catch(() => {});
+          if (room) await leaveOnlineRoom(room.id, profile.id, room.hostId === profile.id);
           activeRoomRef.current = null;
           rosterRoomIdRef.current = null;
           setCurrentRoom(null);

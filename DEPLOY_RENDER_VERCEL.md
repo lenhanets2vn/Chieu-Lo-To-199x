@@ -36,10 +36,10 @@
 ## Giá trị Firebase hiện có
 
 `DEPLOY_ENV_VALUES.txt` sao từ `firebase-applet-config.json` của source, trong đó:
-- Firebase project ID: `leafy-concept-qt8c4`
-- Firestore named database: `ai-studio-lthich199xlthoin-2cb02316-a219-47a4-9acb-21d18684e2a5`
+- Firebase project ID: `loto-83a1a`
+- Firestore database (default): `(default)`
 
-**Lưu ý:** Firestore named database ở đây KHÔNG phải `(default)`. Nếu nhập biến môi trường chọn project này mà quên `VITE_FIRESTORE_DATABASE_ID`, app sẽ dùng sai database `(default)` và có thể bị lỗi permission hoặc không thấy dữ liệu.
+**Lưu ý:** Bản source này dùng chính database `(default)` của project `loto-83a1a`. Nhập `VITE_FIRESTORE_DATABASE_ID=(default)` để tránh nhầm với database có tên riêng trước đây. Cập nhật lại các biến Firebase cũ trong Render/Vercel trước khi redeploy.
 
 Cách lựa chọn:
 1. **Giữ Firebase hiện có:** Có thể không nhập biến Firebase nào, app dùng file cấu hình được đóng gói. Nếu muốn cấu hình riêng trong dashboard, nhập ĐỦ 7 biến từ `DEPLOY_ENV_VALUES.txt`.
@@ -50,7 +50,7 @@ Cách lựa chọn:
 
 1. Chọn đúng Firebase project, kiểm tra **Authentication > Sign-in method**: bật Email/Password; không cần Anonymous vì ứng dụng bắt buộc đăng ký/đăng nhập.
 2. **Authentication > Settings > Authorized domains**: thêm domain `*.vercel.app` thực tế / `*.onrender.com` thực tế và custom domain đang dùng, mỗi domain chính xác, không kèm `https://` hoặc đường dẫn. Lưu ý Firebase Auth không tự cấp phép domain mới chỉ vì deploy thành công.
-3. **Firestore Database**: kiểm tra database có tên đúng, đã tạo và đang chạy; triển khai `firestore.rules` và `firestore.indexes.json` **vào database đó** bằng tài khoản được phép. Deploy trên Vercel/Render KHÔNG tự deploy Firestore Rules.
+3. **Firestore Database**: kiểm tra database mặc định đúng, đã tạo và đang chạy; triển khai `firestore.rules` và `firestore.indexes.json` **vào database đó** bằng tài khoản được phép. Deploy trên Vercel/Render KHÔNG tự deploy Firestore Rules.
 4. Cấu hình Firebase API key restriction phù hợp Firebase Authentication nếu hệ thống sử dụng key hạn chế; không đưa service account/Admin private key vào VITE_ vars.
 5. Nếu `permission-denied`, kiểm tra cấu hình Firebase Rules, UID và database ID; KHÔNG mở Rules `allow read, write: if true`.
 

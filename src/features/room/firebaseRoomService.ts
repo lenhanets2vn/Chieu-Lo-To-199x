@@ -1,7 +1,7 @@
 import {
-  collection, doc, setDoc, updateDoc, query, where,
+  collection, doc, updateDoc, query, where,
   limit, orderBy, onSnapshot, addDoc, serverTimestamp, runTransaction,
-  FirestoreError, writeBatch, getDocFromServer
+  FirestoreError, writeBatch, getDocFromServer, getDocs, Timestamp
 } from 'firebase/firestore';
 import { db, auth } from '../../services/firebase';
 import { GameRoom } from './types';
@@ -24,6 +24,12 @@ export interface LiveRoomGame {
   winnerRow?: number[];
   updatedAt?: unknown;
   countdownEndsAt?: number;
+  // One audio event per transition, never a heartbeat or progress write.
+  audioPhase?: 'idle' | 'intro' | 'number' | 'near_end' | 'outro';
+  audioTrack?: string;
+  audioStartedAt?: Timestamp;
+  soundpackId?: string;
+  roundId?: string;
 }
 
 /** Create a room and its small separate live-state document. */
@@ -60,7 +66,7 @@ export async function createOnlineRoom(
   batch.set(roomRef, room);
   batch.set(memberRef, { ...hostPlayer, tickets: [], isBot: false, joinedAt: serverTimestamp() });
   batch.set(stateRef, {
-    status: 'WAITING', currentBallNumber: null, calledHistory: [], updatedAt: serverTimestamp()
+    status: 'WAITING', currentBallNumber: null, calledHistory: [], audioPhase: 'idle', updatedAt: serverTimestamp()
   });
   try {
     await batch.commit();
@@ -104,19 +110,53 @@ export function subscribeToRoomGameState(roomId: string, onState: (state: LiveRo
   }, err => onError?.(err));
 }
 
+/** Publish only actual changes. Lobby status changes once per phase, not per ball. */
 export async function publishRoomGameState(roomId: string, update: Partial<LiveRoomGame>): Promise<void> {
   if (!roomId) return;
-  await updateDoc(doc(db, 'rooms', roomId, 'state', 'current'), {
-    ...update, updatedAt: serverTimestamp()
-  });
+  const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
+  const payload = { ...update, updatedAt: serverTimestamp() };
+  const phase = update.status;
+  if (phase === 'WAITING' || phase === 'COUNTDOWN' || phase === 'GAME_OVER') {
+    const batch = writeBatch(db);
+    batch.update(stateRef, payload);
+    batch.update(doc(db, 'rooms', roomId), { status: phase });
+    await batch.commit();
+  } else {
+    await updateDoc(stateRef, payload);
+  }
+}
+
+/** Publish once when a track actually begins. No audio-position polling/writes. */
+export async function publishRoomAudioEvent(
+  roomId: string, phase: 'intro' | 'number' | 'near_end' | 'outro',
+  track: string, soundpackId: string, firstNumber: boolean = false
+): Promise<void> {
+  if (!roomId) return;
+  const liveStatus: GameStatus = phase === 'outro' ? 'GAME_OVER' : phase === 'intro' ? 'COUNTDOWN' : 'CALLING';
+  const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
+  const payload = {
+    audioPhase: phase, audioTrack: track, audioStartedAt: serverTimestamp(),
+    soundpackId, status: liveStatus, updatedAt: serverTimestamp()
+  };
+  // Room cards (and joinability) switch only at first song and at game over.
+  if (firstNumber || phase === 'outro') {
+    const batch = writeBatch(db);
+    batch.update(stateRef, payload);
+    batch.update(doc(db, 'rooms', roomId), { status: liveStatus });
+    await batch.commit();
+  } else {
+    await updateDoc(stateRef, payload);
+  }
 }
 
 /** Own member state is isolated: no player may edit another player's tickets. */
 export async function publishOwnRoomTickets(roomId: string, player: PlayerState, tickets: LotoTicket[]): Promise<void> {
   if (!auth.currentUser || auth.currentUser.uid !== player.id) return;
-  await setDoc(doc(db, 'rooms', roomId, 'members', player.id), {
-    ...player, tickets: tickets.slice(0, 1), isBot: false
-  }, { merge: true });
+  // Only the ticket and readiness changed. Do not rewrite the entire member
+  // profile, joinedAt, or isHost during a round (especially after HOST handoff).
+  await updateDoc(doc(db, 'rooms', roomId, 'members', player.id), {
+    tickets: tickets.slice(0, 1), isReady: player.isReady
+  });
 }
 
 export function subscribeToRoomMembers(roomId: string, onMembers: (players: PlayerState[]) => void,
@@ -127,6 +167,17 @@ export function subscribeToRoomMembers(roomId: string, onMembers: (players: Play
   }, err => onError?.(err));
 }
 
+
+/** Lightweight self membership listener. A guest does not need to load 100 tickets
+ * just to see his own ticket/chat join-time. */
+export function subscribeToOwnRoomMember(roomId: string, uid: string,
+  onMember: (member: (PlayerState & { joinedAt?: Timestamp }) | null) => void,
+  onError?: (error: FirestoreError) => void): () => void {
+  return onSnapshot(doc(db, 'rooms', roomId, 'members', uid), snap => {
+    if (!snap.exists() && snap.metadata.fromCache) return;
+    onMember(snap.exists() ? snap.data() as (PlayerState & { joinedAt?: Timestamp }) : null);
+  }, error => onError?.(error));
+}
 
 /** Backfill a join timestamp once for a member from a pre-session release. */
 export async function ensureRoomChatJoinTime(roomId: string, uid: string): Promise<void> {
@@ -189,29 +240,46 @@ export async function joinOnlineRoom(
   }
 }
 
-/** Leave atomically so a departed user frees one slot. Host leaving closes room. */
-export async function leaveOnlineRoom(roomId: string, playerId: string): Promise<void> {
+/**
+ * On a deliberate HOST exit, elect one existing member in the same transaction.
+ * The state and room ID stay unchanged, so other devices remain connected.
+ * Unexpected browser crashes still require a backend presence/lease solution.
+ */
+export async function leaveOnlineRoom(roomId: string, playerId: string, wasHost: boolean = false): Promise<void> {
   if (!auth.currentUser || auth.currentUser.uid !== playerId) return;
   const roomRef = doc(db, 'rooms', roomId);
   const memberRef = doc(db, 'rooms', roomId, 'members', playerId);
   const stateRef = doc(db, 'rooms', roomId, 'state', 'current');
+  // This small read occurs ONLY on explicit departure, never while idling.
+  // A nominated successor is checked again inside the transaction to avoid races.
+  const successors = wasHost
+    ? await getDocs(query(collection(db, 'rooms', roomId, 'members'), limit(5))) : null;
+  const nominated = successors?.docs.find(snapshot => snapshot.id !== playerId)?.id ?? null;
   await runTransaction(db, async tx => {
     const roomSnap = await tx.get(roomRef);
     const memberSnap = await tx.get(memberRef);
-    const stateSnap = await tx.get(stateRef);
     if (!roomSnap.exists() || !memberSnap.exists()) return;
     const room = roomSnap.data() as GameRoom;
-    if (room.hostId === playerId) {
-      // Remaining clients observe room deletion and leave; nested historical messages
-      // require optional scheduled backend cleanup (Firestore does not cascade-delete).
-      tx.delete(memberRef);
-      if (stateSnap.exists()) tx.delete(stateRef);
-      tx.delete(roomRef);
-    } else {
-      const count = Number.isInteger(room.memberCount) ? room.memberCount! : (room.players?.length || 1);
+    const count = Number.isInteger(room.memberCount) ? room.memberCount! : (room.players?.length || 1);
+    if (room.hostId !== playerId) {
       tx.delete(memberRef);
       tx.update(roomRef, { memberCount: Math.max(1, count - 1) });
+      return;
     }
+    if (count > 1) {
+      if (!nominated) throw new Error('Chưa tìm được người nhận quyền HOST. Hãy thử rời phòng lần nữa.');
+      const successorRef = doc(db, 'rooms', roomId, 'members', nominated);
+      const successor = await tx.get(successorRef);
+      if (!successor.exists()) throw new Error('Người nhận HOST đã rời phòng. Hãy thử lại.');
+      tx.update(successorRef, { isHost: true });
+      tx.update(roomRef, { hostId: nominated, hostName: successor.data().name || 'Chủ phòng', memberCount: count - 1 });
+      tx.delete(memberRef);
+      return;
+    }
+    const stateSnap = await tx.get(stateRef);
+    tx.delete(memberRef);
+    if (stateSnap.exists()) tx.delete(stateRef);
+    tx.delete(roomRef);
   });
 }
 
