@@ -16,3 +16,9 @@ export function realtimeDatabase(): Database {
   }
   return instance;
 }
+
+/** Cost-safety switch: enable only after verifying RTDB admission rules and
+ * measuring Firestore queue traffic on real devices. Disabled by default to
+ * avoid silently running a second Firestore listener for every login. */
+export const sparkAdmissionEnabled = realtimeConfigured &&
+  String(import.meta.env.VITE_ENABLE_SPARK_ADMISSION || '').toLowerCase() === 'true';

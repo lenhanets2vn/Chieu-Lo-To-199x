@@ -63,7 +63,7 @@ import {
   flushPendingProfileSync, logoutPlayer
 } from './features/auth/firebaseAuthService';
 import { auth, db } from './services/firebase';
-import { realtimeConfigured } from './services/realtime';
+import { sparkAdmissionEnabled } from './services/realtime';
 import { startOnlineAdmission, type AdmissionState } from './features/capacity/onlineAdmission';
 import { doc, getDoc, getDocFromServer, setDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { createStarterProfile } from './features/progression/progressionStore';
@@ -113,6 +113,7 @@ export default function App() {
   const [chatConnection, setChatConnection] = useState<{world: 'connecting'|'online'|'offline'|'error'; room: 'connecting'|'online'|'offline'|'error'}>({ world:'connecting', room:'connecting' });
   const [chatConnectionError, setChatConnectionError] = useState<{world:string|null;room:string|null}>({ world:null, room:null });
   const [worldChatJoinedAt, setWorldChatJoinedAt] = useState<Timestamp | null>(null);
+  const [worldChatRetryKey, setWorldChatRetryKey] = useState(0);
   // Opening other tabs no longer re-writes chat_sessions/{uid} every time.
   const startedWorldChatForRef = useRef<string | null>(null);
   const worldChatCursorRef = useRef<Timestamp | null>(null);
@@ -423,7 +424,7 @@ export default function App() {
   // A waiting visitor uses Firestore queue ONLY, without holding an RTDB socket.
   // An active visitor has one RTDB presence slot and receives onDisconnect cleanup.
   useEffect(() => {
-    if (!realtimeConfigured || !readyUserId) return;
+    if (!sparkAdmissionEnabled || !readyUserId) return;
     setOnlineAdmission({status:'connecting'});
     return startOnlineAdmission(readyUserId, setOnlineAdmission);
   }, [readyUserId]);
@@ -482,7 +483,7 @@ export default function App() {
       setChatConnection(previous => ({ ...previous, world: 'error' }));
       setChatConnectionError(previous => ({ ...previous, world: 'Không bắt đầu được trò chuyện. Hãy thử mở lại kênh.' }));
     });
-  }, [readyUserId, isWorldChatOpen, currentView, currentRoom?.id, matchRightTab]);
+  }, [readyUserId, isWorldChatOpen, currentView, currentRoom?.id, matchRightTab, worldChatRetryKey]);
 
   // Subscribe to real-time World chat from Firestore
   useEffect(() => {
@@ -1758,7 +1759,7 @@ export default function App() {
   };
 
   const currentTheme = getThemeConfig(profile.activeThemeId);
-  const needsOnlineAdmission = realtimeConfigured && readyUserId && onlineAdmission.status !== 'active';
+  const needsOnlineAdmission = sparkAdmissionEnabled && readyUserId && onlineAdmission.status !== 'active';
 
   // The entire gameplay UI remains inaccessible until Firebase Auth AND a
   // matching Firestore user profile are ready (no anonymous/guest mode).
@@ -2271,6 +2272,13 @@ export default function App() {
               <ChatPanel userId={profile.id} messages={messages}
                 connectionState={chatConnection.world}
                 connectionError={chatConnectionError.world}
+                onRetry={() => {
+                  startedWorldChatForRef.current = null;
+                  worldChatCursorRef.current = null;
+                  setWorldChatJoinedAt(null);
+                  setMessages(existing => existing.filter(message => message.channel !== 'world'));
+                  setWorldChatRetryKey(previous => previous + 1);
+                }}
                 onSendMessage={handleSendMessage} onSendBuzz={() => {}}
                 isInsideRoom={false} channel="world"
                 onJoinRoomFromChat={code => { setIsWorldChatOpen(false); void handleJoinRoom(code).catch(error => {

@@ -9,36 +9,101 @@ import {
   FirestoreError, Timestamp, doc, setDoc, getDocFromServer, where
 } from 'firebase/firestore';
 import { db, auth } from '../../services/firebase';
-import { realtimeConfigured, realtimeDatabase } from '../../services/realtime';
-import { ref as rtRef, set as rtSet, get as rtGet, push as rtPush, query as rtQuery, orderByChild, startAt, limitToLast, onChildAdded, onChildRemoved, onValue, serverTimestamp as rtServerTimestamp } from 'firebase/database';
+import { realtimeConfigured, realtimeDatabase, sparkAdmissionEnabled } from '../../services/realtime';
+import { ref as rtRef, set as rtSet, get as rtGet, push as rtPush, query as rtQuery, orderByChild, startAt, limitToLast, onChildAdded, onChildRemoved, onValue, goOnline, goOffline, serverTimestamp as rtServerTimestamp } from 'firebase/database';
 import { ChatMessage, renderChatEmojiCodes } from './yahooEmojis';
 import { validateAndFilterChatMessage, FilterResult } from './profanityFilter';
 
-/** One write + one server read per signed-in browser session; no heartbeat.
- * Used as a server-sourced lower bound for world-chat visibility.
- * Never persist this across new page opens.
- */
-export async function beginWorldChatSession(uid: string): Promise<Timestamp> {
-  if (auth.currentUser?.uid !== uid || auth.currentUser.isAnonymous) throw new Error('Cần đăng nhập.');
-  if (realtimeConfigured) {
-    const sessionRef = rtRef(realtimeDatabase(), `worldChatSessions/${uid}`);
-    await rtSet(sessionRef, rtServerTimestamp());
-    const session = await rtGet(sessionRef);
-    if (typeof session.val() !== 'number') throw new Error('Không thể mở phiên trò chuyện.');
-    return Timestamp.fromMillis(session.val());
+/** World chat is lazy. An RTDB permission/transport error causes ONE session-
+ * scoped switch to Firestore; never run both listeners in parallel. The fallback
+ * is cached so reopening the chat does not repeat server session writes. */
+type WorldTransport = 'rtdb' | 'firestore';
+let worldTransport: WorldTransport = realtimeConfigured ? 'rtdb' : 'firestore';
+let worldTransportUid: string | null = null;
+let firestoreWorldSessionPromise: Promise<Timestamp> | null = null;
+let chatRealtimeListeners = 0;
+export function isRealtimeWorldChatSubscribed(): boolean { return chatRealtimeListeners > 0; }
+
+function checkWorldUser(uid: string): void {
+  if (auth.currentUser?.uid !== uid || auth.currentUser.isAnonymous) {
+    throw new Error('Cần đăng nhập.');
   }
-  const ref = doc(db, 'chat_sessions', uid);
-  await setDoc(ref, { uid, joinedAt: serverTimestamp() });
-  const snapshot = await getDocFromServer(ref);
-  const timestamp = snapshot.data()?.joinedAt;
-  if (!(timestamp instanceof Timestamp)) throw new Error('Không thể bắt đầu phiên trò chuyện.');
-  return timestamp;
+  if (worldTransportUid !== uid) {
+    worldTransportUid = uid;
+    worldTransport = realtimeConfigured ? 'rtdb' : 'firestore';
+    firestoreWorldSessionPromise = null;
+  }
 }
 
-/**
- * Subscribe to real-time World chat messages with low latency.
- * Uses limit(40) and orderBy('createdAt', 'desc') to optimize read quotas.
- */
+function getFirestoreWorldSession(uid: string): Promise<Timestamp> {
+  checkWorldUser(uid);
+  if (!firestoreWorldSessionPromise) {
+    firestoreWorldSessionPromise = (async () => {
+      const sessionRef = doc(db, 'chat_sessions', uid);
+      await setDoc(sessionRef, { uid, joinedAt: serverTimestamp() });
+      const snapshot = await getDocFromServer(sessionRef);
+      const timestamp = snapshot.data()?.joinedAt;
+      if (!(timestamp instanceof Timestamp)) throw new Error('Không thể mở phiên chat dự phòng.');
+      return timestamp;
+    })().catch(error => {
+      firestoreWorldSessionPromise = null; // Explicit user retry may try again.
+      throw error;
+    });
+  }
+  return firestoreWorldSessionPromise;
+}
+
+export async function beginWorldChatSession(uid: string): Promise<Timestamp> {
+  checkWorldUser(uid);
+  if (worldTransport === 'rtdb') {
+    try {
+      const rtdb = realtimeDatabase();
+      // Admission's old goOffline() affected this very same RTDB connection.
+      // Reconnect explicitly before starting the channel.
+      goOnline(rtdb);
+      const sessionRef = rtRef(rtdb, `worldChatSessions/${uid}`);
+      await rtSet(sessionRef, rtServerTimestamp());
+      const session = await rtGet(sessionRef);
+      if (typeof session.val() !== 'number') throw new Error('Phiên trò chuyện chưa có mốc thời gian.');
+      return Timestamp.fromMillis(session.val());
+    } catch (error) {
+      console.warn('RTDB world-chat session unavailable; switching transport:', (error as { code?: string })?.code || 'unavailable');
+      worldTransport = 'firestore';
+    }
+  }
+  return getFirestoreWorldSession(uid);
+}
+
+function subscribeToFirestoreWorldChat(
+  onMessagesUpdate: (messages: ChatMessage[]) => void,
+  joinedAt: Timestamp,
+  onError?: (error: FirestoreError) => void,
+  onConnection?: (fromServer: boolean) => void,
+  resumeFrom?: Timestamp
+): () => void {
+  const earliest = resumeFrom && resumeFrom.toMillis() > joinedAt.toMillis() ? resumeFrom : joinedAt;
+  const q = query(collection(db, 'world_messages'), where('createdAt', '>=', earliest),
+    orderBy('createdAt', 'desc'), limit(40));
+  return onSnapshot(q, { includeMetadataChanges: false }, snapshot => {
+    onConnection?.(!snapshot.metadata.fromCache);
+    const messages: ChatMessage[] = [];
+    snapshot.forEach(item => {
+      const data = item.data();
+      messages.push({
+        id: item.id, senderId: data.senderId || 'unknown',
+        senderName: data.senderName || 'Hội viên', characterId: data.characterId || 'chi_ba',
+        avatar: data.avatar, text: renderChatEmojiCodes(data.text || ''),
+        createdAt: data.createdAt instanceof Timestamp ? data.createdAt : undefined,
+        timestamp: data.createdAt?.toMillis?.() || (typeof data.timestamp === 'number' ? data.timestamp : Date.now()),
+        channel: 'world', isBuzz: Boolean(data.isBuzz),
+        isVipEmoji: typeof data.isVipEmoji === 'string' ? data.isVipEmoji : undefined
+      });
+    });
+    onMessagesUpdate(messages.reverse());
+  }, error => onError?.(error));
+}
+
+/** Query at most 40 recent messages, never load messages before login/chat start. */
 export function subscribeToWorldChat(
   onMessagesUpdate: (messages: ChatMessage[]) => void,
   joinedAt: Timestamp,
@@ -46,74 +111,100 @@ export function subscribeToWorldChat(
   onConnection?: (fromServer: boolean) => void,
   resumeFrom?: Timestamp
 ): () => void {
-  if (realtimeConfigured) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) { onError?.(new Error('Cần đăng nhập.') as FirestoreError); return () => {}; }
+  checkWorldUser(uid);
+  let closed = false;
+  let fallbackStarted = false;
+  let hasChatCount = false;
+  let stopFirestore: (() => void) | null = null;
+  const rtdbUnsubs: Array<() => void> = [];
+  const stopRtdb = () => {
+    while (rtdbUnsubs.length) rtdbUnsubs.pop()?.();
+  };
+  const fallback = (failure: unknown) => {
+    if (closed || fallbackStarted) return;
+    fallbackStarted = true;
+    worldTransport = 'firestore';
+    stopRtdb();
+    if (hasChatCount) {
+      chatRealtimeListeners = Math.max(0, chatRealtimeListeners - 1);
+      hasChatCount = false;
+    }
+    if (!sparkAdmissionEnabled && chatRealtimeListeners === 0 && realtimeConfigured) {
+      goOffline(realtimeDatabase());
+    }
+    onConnection?.(false);
+    console.warn('RTDB world-chat read failed; using one Firestore fallback listener:',
+      (failure as { code?: string })?.code || 'unavailable');
+    void getFirestoreWorldSession(uid).then(fallbackJoinedAt => {
+      if (closed) return;
+      // A new session timestamp is mandatory under Firestore Security Rules.
+      stopFirestore = subscribeToFirestoreWorldChat(onMessagesUpdate, fallbackJoinedAt,
+        onError, onConnection);
+    }).catch(error => { if (!closed) onError?.(error as FirestoreError); });
+  };
+  if (worldTransport !== 'rtdb') {
+    // Fallback session may have been initialized by a previous subscription.
+    void getFirestoreWorldSession(uid).then(fallbackJoinedAt => {
+      if (closed) return;
+      stopFirestore = subscribeToFirestoreWorldChat(onMessagesUpdate, fallbackJoinedAt,
+        onError, onConnection, resumeFrom);
+    }).catch(error => { if (!closed) onError?.(error as FirestoreError); });
+    return () => { closed = true; stopFirestore?.(); };
+  }
+  try {
     const rtdb = realtimeDatabase();
-    const earliest = Math.max(joinedAt.toMillis(), (resumeFrom?.toMillis() ?? 0));
-    const messagesQuery = rtQuery(rtRef(rtdb, 'worldMessages'), orderByChild('timestamp'), startAt(earliest), limitToLast(40));
+    goOnline(rtdb);
+    const earliest = Math.max(joinedAt.toMillis(), resumeFrom?.toMillis() ?? 0);
+    const messagesQuery = rtQuery(rtRef(rtdb, 'worldMessages'),
+      orderByChild('timestamp'), startAt(earliest), limitToLast(40));
     const cache = new Map<string, ChatMessage>();
     let queued = false;
     const flush = () => {
-      if (queued) return;
+      if (queued || closed || fallbackStarted) return;
       queued = true;
       queueMicrotask(() => {
         queued = false;
-        onMessagesUpdate([...cache.values()].sort((a,b) => a.timestamp-b.timestamp).slice(-40));
+        if (!closed && !fallbackStarted) onMessagesUpdate(
+          [...cache.values()].sort((a,b) => a.timestamp - b.timestamp).slice(-40));
       });
     };
-    const unsubAdded = onChildAdded(messagesQuery, snapshot => {
-      const v = snapshot.val();
-      if (!v || !snapshot.key) return;
-      const when = Number(v.timestamp) || Date.now();
-      cache.set(snapshot.key, { id: snapshot.key, senderId: String(v.senderId || ''),
-        senderName: String(v.senderName || 'Hội viên'), characterId: String(v.characterId || 'chi_ba'),
-        text: renderChatEmojiCodes(String(v.text || '')), timestamp: when,
+    chatRealtimeListeners++;
+    hasChatCount = true;
+    const added = onChildAdded(messagesQuery, snapshot => {
+      const value = snapshot.val();
+      if (!value || !snapshot.key) return;
+      const when = Number(value.timestamp) || Date.now();
+      cache.set(snapshot.key, {
+        id: snapshot.key, senderId: String(value.senderId || ''),
+        senderName: String(value.senderName || 'Hội viên'),
+        characterId: String(value.characterId || 'chi_ba'),
+        text: renderChatEmojiCodes(String(value.text || '')), timestamp: when,
         createdAt: Timestamp.fromMillis(when), channel: 'world',
-        isVipEmoji: typeof v.isVipEmoji === 'string' ? v.isVipEmoji : undefined });
-      flush();
-    }, error => onError?.(error as FirestoreError));
-    const unsubRemoved = onChildRemoved(messagesQuery, snap => { cache.delete(snap.key || ''); flush(); });
-    const unsubConnection = onValue(rtRef(rtdb, '.info/connected'), snap => onConnection?.(snap.val() === true));
-    return () => { unsubAdded(); unsubRemoved(); unsubConnection(); cache.clear(); };
-  }
-  const worldRef = collection(db, 'world_messages');
-  // Retain the mandatory session lower bound for privacy Rules. On reconnect,
-  // also restrict to the newest timestamp already held in React memory.
-  const q = resumeFrom
-    ? query(worldRef, where('createdAt', '>=', joinedAt), where('createdAt', '>=', resumeFrom),
-      orderBy('createdAt', 'desc'), limit(40))
-    : query(worldRef, where('createdAt', '>=', joinedAt), orderBy('createdAt', 'desc'), limit(40));
-
-  return onSnapshot(
-    q, { includeMetadataChanges: true },
-    (snapshot) => {
-      onConnection?.(!snapshot.metadata.fromCache);
-      // Metadata-only updates are not new messages: avoid needless React renders.
-      if (snapshot.docChanges().length === 0) return;
-      const msgs: ChatMessage[] = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        msgs.push({
-          id: doc.id,
-          senderId: data.senderId || 'unknown',
-          senderName: data.senderName || 'Khách vãng lai',
-          characterId: data.characterId || 'chi_ba',
-          avatar: data.avatar,
-          text: data.text || '',
-          createdAt: data.createdAt instanceof Timestamp ? data.createdAt : undefined,
-          timestamp: data.createdAt?.toMillis?.() || (typeof data.timestamp === 'number' ? data.timestamp : Date.now()),
-          channel: 'world',
-          isBuzz: data.isBuzz || false,
-          isVipEmoji: typeof data.isVipEmoji === 'string' ? data.isVipEmoji : undefined
-        });
+        isVipEmoji: typeof value.isVipEmoji === 'string' ? value.isVipEmoji : undefined
       });
-      // Reverse so oldest is top, newest is bottom
-      onMessagesUpdate(msgs.reverse());
-    },
-    (err) => {
-      console.warn('World chat subscription error:', err);
-      onError?.(err);
+      flush();
+    }, fallback);
+    rtdbUnsubs.push(added);
+    rtdbUnsubs.push(onChildRemoved(messagesQuery, snapshot => {
+      cache.delete(snapshot.key || ''); flush();
+    }));
+    rtdbUnsubs.push(onValue(rtRef(rtdb, '.info/connected'), snapshot => {
+      onConnection?.(snapshot.val() === true);
+    }, fallback));
+  } catch (error) { fallback(error); }
+  return () => {
+    closed = true;
+    stopRtdb();
+    stopFirestore?.();
+    if (hasChatCount) chatRealtimeListeners = Math.max(0, chatRealtimeListeners - 1);
+    // No admission socket must be held when the chat has closed. This avoids
+    // idle RTDB bandwidth; it is gated because active admission needs presence.
+    if (!sparkAdmissionEnabled) {
+      if (chatRealtimeListeners === 0 && realtimeConfigured) goOffline(realtimeDatabase());
     }
-  );
+  };
 }
 
 /**
@@ -132,8 +223,10 @@ export async function sendWorldChatMessage(
   }
 
   try {
-    if (realtimeConfigured) {
-      const messageRef = rtPush(rtRef(realtimeDatabase(), 'worldMessages'));
+    if (worldTransport === 'rtdb' && realtimeConfigured) {
+      const rtdb = realtimeDatabase();
+      goOnline(rtdb);
+      const messageRef = rtPush(rtRef(rtdb, 'worldMessages'));
       await rtSet(messageRef, {
         senderId: sender.id, senderName: sender.name.slice(0, 48),
         characterId: sender.characterId.slice(0, 48), text: renderChatEmojiCodes(filter.filteredText),
@@ -141,6 +234,8 @@ export async function sendWorldChatMessage(
       });
       return filter;
     }
+    // Firestore fallback must establish its own server-sided start time once.
+    await getFirestoreWorldSession(sender.id);
     const worldRef = collection(db, 'world_messages');
     await addDoc(worldRef, {
       senderId: sender.id,

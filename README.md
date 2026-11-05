@@ -1,3 +1,9 @@
+## CẬP NHẬT KHẨN: CHAT THẾ GIỚI VÀ READ/WRITE (05/11/2026)
+
+Bản này sửa lỗi Chat Thế giới không tải tin do RTDB bị ngắt bởi module hàng chờ, hỗ trợ một lần chuyển Firestore dự phòng khi RTDB lỗi, và **tắt mặc định** hàng chờ Firestore nhằm giảm số lượt đọc/ghi khi nhiều tài khoản đăng nhập. **Giới hạn 90 người không được thực thi khi công tắc đang tắt.** Xem `BAO_CAO_HOTFIX_CHAT_RW_20261105.md` để biết cách kích hoạt lại có kiểm soát.
+
+---
+
 # Lô Tô Hội Chợ 199x — Full Source
 
 Ứng dụng React / TypeScript / Vite, Firebase Authentication và Cloud Firestore.

@@ -8,6 +8,7 @@ import { collection, deleteDoc, doc, getDoc, limit, onSnapshot, orderBy, query, 
 import { get, goOffline, goOnline, onDisconnect, onValue, ref, remove, serverTimestamp as rtServerTimestamp, set, type DatabaseReference } from 'firebase/database';
 import { auth, db } from '../../services/firebase';
 import { realtimeDatabase } from '../../services/realtime';
+import { isRealtimeWorldChatSubscribed } from '../chat/firebaseChatService';
 
 export type AdmissionState = {
   status: 'connecting' | 'waiting' | 'active' | 'error';
@@ -110,7 +111,7 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
         stopActiveConnection?.(); stopActiveConnection = null;
         admitted = false;
         notify({ status: 'connecting', message: 'Mất kết nối. Đang chờ được vào lại…' });
-        goOffline(rtdb);
+        if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb);
         void start();
       });
     } catch (e) {
@@ -118,7 +119,9 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
       // A full DB is expected; other errors are retried, not exposed as backend names.
       notify({ status: 'waiting', message: 'Hệ thống đang đủ người. Bạn đang ở hàng chờ.' });
       if (occupiedSlot) await onDisconnect(occupiedSlot).cancel().catch(() => {});
-      goOffline(rtdb); // Waiters consume zero persistent RTDB connections.
+      // Do not disconnect another feature's world-chat listener: both features
+    // use the same RTDB connection. Waiters without chat stay disconnected.
+    if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb);
     } finally { trying = false; }
   };
 
@@ -155,7 +158,7 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
     }
   };
   // Stop RTDB sockets while waiting; start() only uses Firestore until queue leader.
-  goOffline(rtdb);
+  if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb);
   void start();
   return () => {
     stopped = true;
@@ -165,6 +168,6 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
     if (leaseTimer) clearInterval(leaseTimer);
     if (admitted && occupiedSlot) void remove(occupiedSlot).catch(() => {});
     else void deleteDoc(waitingRef).catch(() => {});
-    goOffline(rtdb); // triggers onDisconnect if network drops before explicit remove.
+    if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb); // releases presence only if no chat subscriber
   };
 }

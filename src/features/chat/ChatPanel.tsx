@@ -21,6 +21,7 @@ interface ChatPanelProps {
   onTriggerVipEffect?: (effectType: string) => void;
   connectionState?: 'connecting' | 'online' | 'offline' | 'error';
   connectionError?: string | null;
+  onRetry?: () => void;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -38,7 +39,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onTriggerVipEffect,
   unlockedVipEmojis = [],
   connectionState = 'connecting',
-  connectionError = null
+  connectionError = null,
+  onRetry
 }) => {
   const activeTab = channel;
   const [inputText, setInputText] = useState('');
@@ -124,7 +126,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       </div>
 
-      {connectionError && <p role="alert" className="bg-red-50 border border-red-300 px-2 py-1 text-red-800 text-[11px] font-semibold">Không thể tải tin nhắn. Hãy thử lại sau.</p>}
+      {connectionError && (
+        <div role="alert" className="bg-red-50 border border-red-300 px-2 py-1 text-red-800 text-[11px] font-semibold flex justify-between items-center gap-2">
+          <span>{connectionError}</span>
+          {onRetry && <button type="button" className="bg-red-800 text-white px-2 py-1 rounded cursor-pointer whitespace-nowrap" onClick={onRetry}>Thử kết nối lại</button>}
+        </div>
+      )}
       {/* Separate panels; no cross-channel tabs or cached history mixing. */}
       <div className="flex flex-wrap items-center justify-between gap-1 bg-[#d4d0c8] border-b border-[#808080] px-2 py-1 text-[11px] font-semibold">
         <span className="flex items-center gap-1">

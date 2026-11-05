@@ -1,3 +1,5 @@
+> **HOTFIX 05/11/2026 — ƯU TIÊN GIẢM CHI PHÍ**: Hàng chờ Spark đang **tắt mặc định**. Việc đặt `VITE_FIREBASE_DATABASE_URL` chỉ bật Chat Thế giới qua RTDB; không tự kích hoạt hàng chờ. Muốn khởi động lại hàng chờ cũ phải đặt `VITE_ENABLE_SPARK_ADMISSION=true` sau khi kiểm thử tải và quyền truy cập. Chế độ `false` không áp giới hạn 90 suất; xem `BAO_CAO_HOTFIX_CHAT_RW_20261105.md` trước khi đưa lên production.
+
 # Lô Tô 199x — tối ưu Spark Free theo mô hình lai (05/11/2026)
 
 ## Các thay đổi đã viết vào mã
@@ -23,7 +25,7 @@
 1. Firebase Console → chọn `loto-83a1a` → Build → Realtime Database → Create Database → chọn vùng gần người dùng, chế độ **Locked**.
 2. Sao chép URL đầy đủ từ tab **Data**, ví dụ `https://...firebasedatabase.app` (không tự dựng URL).
 3. Giải nén source và chạy `DEPLOY_SPARK_REALTIME_WINDOWS.cmd` bằng tài khoản quản trị. Gói này triển khai Firestore Rules, indexes và RTDB Rules. Không bật quyền công khai.
-4. Trong Render/Vercel Environment, đặt `VITE_FIREBASE_DATABASE_URL=<URL lấy từ Console>`, giữ nguyên 6 biến Firebase của dự án `loto-83a1a`. Redeploy website.
+4. Trong Render/Vercel Environment, đặt `VITE_FIREBASE_DATABASE_URL=<URL lấy từ Console>`; để `VITE_ENABLE_SPARK_ADMISSION=false` để tránh hàng chờ Firestore sinh đọc/ghi âm thầm; giữ nguyên 6 biến Firebase của dự án `loto-83a1a`. Redeploy website.
 5. Kiểm thử 2 thiết bị: mở chat thế giới (không thấy tin cũ), gửi và nhận emoji, bắt đầu game ở 2 trình duyệt, xếp hàng khi trần 90 slot và thử tắt tab để kiểm tra onDisconnect; quan sát Usage RTDB và Firestore.
 
 ## Những gì chưa được kiểm thử/triển khai trên đám mây
