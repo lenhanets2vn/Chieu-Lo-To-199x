@@ -29,6 +29,7 @@ let worldTransport: WorldTransport = configuredWorldTransport;
 let rtdbChatConnected = false;
 let worldTransportUid: string | null = null;
 let firestoreWorldSessionPromise: Promise<Timestamp> | null = null;
+let rtdbWorldSessionPromise: Promise<Timestamp> | null = null;
 let chatRealtimeListeners = 0;
 export function isRealtimeWorldChatSubscribed(): boolean { return chatRealtimeListeners > 0; }
 
@@ -40,6 +41,7 @@ function checkWorldUser(uid: string): void {
     worldTransportUid = uid;
     worldTransport = configuredWorldTransport;
     firestoreWorldSessionPromise = null;
+    rtdbWorldSessionPromise = null;
   }
 }
 
@@ -48,8 +50,8 @@ function getFirestoreWorldSession(uid: string): Promise<Timestamp> {
   if (!firestoreWorldSessionPromise) {
     firestoreWorldSessionPromise = (async () => {
       const sessionRef = doc(db, 'chat_sessions', uid);
-      await setDoc(sessionRef, { uid, joinedAt: serverTimestamp() });
-      const snapshot = await getDocFromServer(sessionRef);
+      await chatHandshakeDeadline(setDoc(sessionRef, { uid, joinedAt: serverTimestamp() }), 8000, 'Mở kênh dự phòng');
+      const snapshot = await chatHandshakeDeadline(getDocFromServer(sessionRef), 8000, 'Đọc kênh dự phòng');
       const timestamp = snapshot.data()?.joinedAt;
       if (!(timestamp instanceof Timestamp)) throw new Error('Không thể mở phiên chat dự phòng.');
       return timestamp;
@@ -80,13 +82,34 @@ function waitForChatSocket(rtdb: Database, signal?: AbortSignal): Promise<void> 
     const abort = () => finish(new Error('Chat session canceled'));
     if (signal?.aborted) { reject(new Error('Chat session canceled')); return; }
     signal?.addEventListener('abort', abort, { once: true });
-    timer = setTimeout(() => finish(new Error('Kết nối trò chuyện quá thời gian chờ.')), 12_000);
+    timer = setTimeout(() => finish(new Error('Kết nối trò chuyện quá thời gian chờ.')), 8_000);
     try {
       stop = onValue(rtRef(rtdb, '.info/connected'), snap => {
         if (snap.val() === true) finish();
       }, error => finish(error));
       if (done) stop(); // onValue may deliver cached state immediately
     } catch (error) { finish(error as Error); }
+  });
+}
+
+/** Bound every RTDB handshake step. The SDK can keep a pending get()/set()
+ * unresolved when a socket silently disconnects; the UI must never show
+ * "Đang kết nối" forever. No recurring timer/polling is introduced. */
+function chatHandshakeDeadline<T>(operation: Promise<T>, ms: number, label: string, signal?: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, value?: T) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+      error ? reject(error) : resolve(value as T);
+    };
+    const abort = () => finish(new Error('Chat session canceled'));
+    if (signal?.aborted) { reject(new Error('Chat session canceled')); return; }
+    const timeout = setTimeout(() => finish(new Error(`${label} quá thời gian chờ.`)), ms);
+    signal?.addEventListener('abort', abort, { once: true });
+    operation.then(value => finish(undefined, value), finish);
   });
 }
 
@@ -100,16 +123,23 @@ export async function beginWorldChatSession(uid: string, signal?: AbortSignal): 
   checkWorldUser(uid);
   if (worldTransport === 'rtdb') {
     try {
-      const rtdb = realtimeDatabase();
-      // SDK reconnects itself; no goOffline/goOnline cycling here.
-      await waitForChatSocket(rtdb, signal);
-      if (signal?.aborted) throw new Error('Chat session canceled');
-      const sessionRef = rtRef(rtdb, `worldChatSessions/${uid}`);
-      await rtSet(sessionRef, rtServerTimestamp());
-      if (signal?.aborted) throw new Error('Chat session canceled');
-      const session = await rtGet(sessionRef);
-      if (typeof session.val() !== 'number') throw new Error('Phiên trò chuyện chưa có mốc thời gian.');
-      return Timestamp.fromMillis(session.val());
+      // A resolved session is reused across modal open/close and manual retry.
+      // Do not repeatedly write a new server timestamp or discard recent chat.
+      if (!rtdbWorldSessionPromise) {
+        rtdbWorldSessionPromise = chatHandshakeDeadline((async () => {
+          const rtdb = realtimeDatabase();
+          await waitForChatSocket(rtdb, signal);
+          if (signal?.aborted) throw new Error('Chat session canceled');
+          const sessionRef = rtRef(rtdb, `worldChatSessions/${uid}`);
+          await chatHandshakeDeadline(rtSet(sessionRef, rtServerTimestamp()), 7000, 'Ghi phiên chat', signal);
+          if (signal?.aborted) throw new Error('Chat session canceled');
+          const session = await chatHandshakeDeadline(rtGet(sessionRef), 7000, 'Đọc phiên chat', signal);
+          if (typeof session.val() !== 'number') throw new Error('Phiên trò chuyện chưa có mốc thời gian.');
+          return Timestamp.fromMillis(session.val());
+        })(), 12000, 'Mở Chat Thế giới', signal)
+          .catch(error => { rtdbWorldSessionPromise = null; throw error; });
+      }
+      return await rtdbWorldSessionPromise;
     } catch (error) {
       if (signal?.aborted) throw error;
       // A transient network failure must NOT silently split users between

@@ -300,27 +300,38 @@ export interface RoomReactionDoc {
   id: string; senderId: string; senderName: string; emoji: string; label: string; timestamp: number;
 }
 export async function sendRoomReaction(roomId: string, reaction: Omit<RoomReactionDoc, 'id'|'timestamp'>): Promise<void> {
-  if (!auth.currentUser || auth.currentUser.uid !== reaction.senderId) return;
+  if (!auth.currentUser || auth.currentUser.uid !== reaction.senderId) {
+    throw new Error('Phiên đăng nhập không khớp; biểu cảm chưa được gửi.');
+  }
   await addDoc(collection(db, 'rooms', roomId, 'reactions'), {
     ...reaction, timestamp: Date.now(), createdAt: serverTimestamp()
   });
 }
 export function subscribeToRoomReactions(roomId: string,
-  onReactionReceived: (reaction: RoomReactionDoc) => void): () => void {
+  onReactionReceived: (reaction: RoomReactionDoc) => void,
+  onError?: (error: { code?: string }) => void): () => void {
   if (!roomId) return () => {};
   const q = query(collection(db, 'rooms', roomId, 'reactions'), orderBy('createdAt', 'desc'), limit(10));
   const seen = new Set<string>();
+  let firstSnapshot = true;
   return onSnapshot(q, snapshot => {
+    const initial = firstSnapshot;
+    firstSnapshot = false;
     snapshot.docChanges().forEach(change => {
       if (change.type !== 'added' || seen.has(change.doc.id)) return;
       seen.add(change.doc.id);
       const data = change.doc.data();
-      if (Date.now() - (data.timestamp || 0) < 8000) {
-        onReactionReceived({ id: change.doc.id, senderId: data.senderId,
-          senderName: data.senderName, emoji: data.emoji, label: data.label, timestamp: data.timestamp });
-      }
+      // The original filter compared two players' local clocks. Even a small
+      // device clock difference could make real-time reactions disappear.
+      // Only suppress old reactions in the initial history snapshot. All new
+      // added events received after subscribing are immediately animated.
+      const createdAt = data.createdAt instanceof Timestamp
+        ? data.createdAt.toMillis() : Number(data.timestamp) || 0;
+      if (initial && Math.abs(Date.now() - createdAt) > 12000) return;
+      onReactionReceived({ id: change.doc.id, senderId: data.senderId,
+        senderName: data.senderName, emoji: data.emoji, label: data.label, timestamp: createdAt });
     });
-  }, err => console.warn('Room reaction listener:', err.code));
+  }, err => { console.warn('Room reaction listener:', err.code); onError?.(err); });
 }
 
 

@@ -323,6 +323,8 @@ export default function App() {
 
   // 90s Real-time Quick-reaction floating emotes
   const [floatingEmotes, setFloatingEmotes] = useState<FloatingEmoteItem[]>([]);
+  const [reactionSendError, setReactionSendError] = useState<string | null>(null);
+  useEffect(() => { setReactionSendError(null); }, [currentRoom?.id]);
 
   const addFloatingEmote = useCallback((senderName: string, emoji: string, label: string) => {
     const id = `emote-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -342,22 +344,26 @@ export default function App() {
   }, []);
 
   const handleSendReaction = useCallback((emoji: string, label: string) => {
+    // Local animation is an optimistic preview, NOT a confirmation of delivery.
     addFloatingEmote(profile.displayName, emoji, label);
+    setReactionSendError(null);
     if (currentRoom?.id) {
       void sendRoomReaction(currentRoom.id, {
         senderId: profile.id,
         senderName: profile.displayName,
         emoji,
         label
+      }).catch((error: unknown) => {
+        console.warn('Room reaction delivery failed:', (error as { code?: string })?.code || error);
+        setReactionSendError((error as { code?: string })?.code === 'permission-denied'
+          ? 'Chưa được cấp quyền gửi biểu cảm. Cần kiểm tra Firestore Rules.'
+          : 'Chưa gửi được biểu cảm đến phòng. Kiểm tra kết nối rồi thử lại.');
       });
     }
+    // Only same-browser tabs; Firestore listener delivers to other devices.
     broadcastChannelRef.current?.postMessage({
       type: 'ROOM_REACTION',
-      payload: {
-        senderName: profile.displayName,
-        emoji,
-        label
-      }
+      payload: { senderName: profile.displayName, emoji, label }
     });
   }, [profile, currentRoom?.id, addFloatingEmote]);
 
@@ -474,6 +480,8 @@ export default function App() {
     }
     if (!wantsChat || startedWorldChatForRef.current === readyUserId) return;
     startedWorldChatForRef.current = readyUserId;
+    setChatConnection(previous => ({ ...previous, world: 'connecting' }));
+    setChatConnectionError(previous => ({ ...previous, world: null }));
     const controller = new AbortController();
     let settled = false;
     beginWorldChatSession(readyUserId, controller.signal).then(joinedAt => {
@@ -481,12 +489,19 @@ export default function App() {
       if (controller.signal.aborted || auth.currentUser?.uid !== readyUserId) return;
       setWorldChatJoinedAt(joinedAt);
       setChatConnectionError(previous => ({ ...previous, world: null }));
-    }).catch(() => {
+    }).catch((error: unknown) => {
       settled = true;
       if (controller.signal.aborted || auth.currentUser?.uid !== readyUserId) return;
       startedWorldChatForRef.current = null;
+      const code = String((error as { code?: string })?.code || '');
+      const detail = code.includes('permission')
+        ? 'Kênh Thế giới bị từ chối quyền truy cập. Cần kiểm tra Rules.'
+        : error instanceof Error && /quá thời gian|không thể kết nối|timeout/i.test(error.message)
+          ? 'Kết nối chat quá thời gian chờ. Kiểm tra mạng và địa chỉ máy chủ.'
+          : 'Không mở được Chat Thế giới. Kiểm tra mạng rồi thử lại.';
+      console.warn('World chat session failed:', code || (error as Error)?.message || error);
       setChatConnection(previous => ({ ...previous, world: 'error' }));
-      setChatConnectionError(previous => ({ ...previous, world: 'Không bắt đầu được trò chuyện. Kiểm tra kết nối hoặc thử lại.' }));
+      setChatConnectionError(previous => ({ ...previous, world: detail }));
     });
     return () => {
       controller.abort();
@@ -720,13 +735,18 @@ export default function App() {
   }, [readyUserId, pageVisible, isWorldChatOpen, currentRoom?.id, roomChatJoinedAt, currentView, matchRightTab, consumeVipChatEffects]);
 
   useEffect(() => {
-    if (!pageVisible || !currentRoom?.id || currentView !== 'GAME_MATCH' || gameState !== 'CALLING') return;
+    if (!pageVisible || !currentRoom?.id || currentView !== 'GAME_MATCH') return;
     return subscribeToRoomReactions(currentRoom.id, reaction => {
       if (reaction.senderId !== auth.currentUser?.uid) {
         addFloatingEmote(reaction.senderName, reaction.emoji, reaction.label);
       }
+    }, error => {
+      console.warn('Room reaction read failed:', error.code);
+      setReactionSendError(error.code === 'permission-denied'
+        ? 'Chưa được cấp quyền nhận biểu cảm phòng. Cần cập nhật Firestore Rules.'
+        : 'Mất kết nối nhận biểu cảm. Vui lòng kiểm tra mạng.');
     });
-  }, [currentRoom?.id, currentView, pageVisible, gameState, addFloatingEmote]);
+  }, [currentRoom?.id, currentView, pageVisible, addFloatingEmote]);
 
   // Verify a KINH claim against the specific member document from the server.
   // Avoid subscribing to 100 private tickets just to validate one claimant.
@@ -2151,6 +2171,7 @@ export default function App() {
 
                 {/* Real-time 90s Quick-Reaction Emote Bar */}
                 <FloatingEmoteBar onSendReaction={handleSendReaction} />
+                {reactionSendError && <div role="alert" className="mt-1 text-xs text-amber-200 bg-red-900/80 rounded px-2 py-1">{reactionSendError}</div>}
 
                 {/* Tab content view */}
                 <div className="h-[420px]">
