@@ -240,31 +240,12 @@ service cloud.firestore {
         && request.resource.data.lastSeen == request.time;
       allow delete: if me(uid);
     }
+    // Kênh Chat Thế giới đã bị gỡ khỏi ứng dụng. Chặn client cũ đọc/ghi.
     match /chat_sessions/{uid} {
-      allow get: if me(uid);
-      allow list: if false;
-      allow create, update: if me(uid) && request.resource.data.keys().hasOnly(['uid','joinedAt'])
-        && request.resource.data.uid == uid && request.resource.data.joinedAt == request.time;
-      allow delete: if false;
+      allow read, write: if false;
     }
     match /world_messages/{messageId} {
-      // Rules are NOT filters. The frontend MUST query with createdAt >= joinedAt.
-      allow get: if signedIn() && exists(/databases/$(database)/documents/chat_sessions/$(request.auth.uid))
-        && resource.data.createdAt >= get(/databases/$(database)/documents/chat_sessions/$(request.auth.uid)).data.joinedAt;
-      allow list: if signedIn() && request.query.limit <= 40
-        && exists(/databases/$(database)/documents/chat_sessions/$(request.auth.uid))
-        && resource.data.createdAt >= get(/databases/$(database)/documents/chat_sessions/$(request.auth.uid)).data.joinedAt;
-      allow create: if signedIn() && request.resource.data.senderId == request.auth.uid
-        && smallText(request.resource.data.text, 500)
-        && request.resource.data.channel == 'world'
-        && request.resource.data.keys().hasOnly([
-          'senderId','senderName','characterId','avatar','text','timestamp','channel','isVipEmoji','isBuzz','createdAt'
-        ])
-        && smallText(request.resource.data.senderName, 48)
-        && (!('avatar' in request.resource.data) || (
-          request.resource.data.avatar is string && request.resource.data.avatar.size() <= 2048))
-        && request.resource.data.createdAt == request.time;
-      allow update, delete: if false;
+      allow read, write: if false;
     }
   }
 }

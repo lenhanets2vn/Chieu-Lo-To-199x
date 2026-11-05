@@ -26,43 +26,6 @@
           ".validate": "newData.isString() && newData.val().matches(/^([0-9]|[1-8][0-9])$/)"
         }
       }
-    },
-    "worldChatSessions": {
-      "$uid": {
-        ".read": "auth != null && auth.uid === $uid",
-        ".write": "auth != null && auth.uid === $uid && newData.isNumber() && newData.val() === now"
-      }
-    },
-    "worldMessages": {
-      ".indexOn": [
-        "timestamp"
-      ],
-      ".read": "auth != null && root.child('worldChatSessions').child(auth.uid).exists() && query.orderByChild === 'timestamp' && query.startAt >= root.child('worldChatSessions').child(auth.uid).val() && query.limitToLast <= 40",
-      "$messageId": {
-        ".write": "auth != null && !data.exists() && newData.exists() && newData.child('senderId').val() === auth.uid && newData.child('timestamp').val() === now && newData.child('text').isString() && newData.child('text').val().length <= 500 && newData.child('text').val().length > 0 && newData.child('senderName').isString() && newData.child('senderName').val().length <= 48",
-        ".validate": "newData.hasChildren(['senderId','senderName','characterId','text','timestamp'])",
-        "senderId": {
-          ".validate": "newData.isString() && newData.val() === auth.uid"
-        },
-        "senderName": {
-          ".validate": "newData.isString() && newData.val().length <= 48"
-        },
-        "characterId": {
-          ".validate": "newData.isString() && newData.val().length <= 48"
-        },
-        "text": {
-          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 500"
-        },
-        "timestamp": {
-          ".validate": "newData.isNumber() && newData.val() === now"
-        },
-        "isVipEmoji": {
-          ".validate": "newData.isString() && newData.val().length <= 40"
-        },
-        "$other": {
-          ".validate": false
-        }
-      }
     }
   }
 }

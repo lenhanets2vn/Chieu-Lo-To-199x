@@ -11,7 +11,6 @@ import {
   Trophy, 
   History as HistoryIcon, 
   Sparkles,
-  MessageSquare,
   LogIn
 } from 'lucide-react';
 
@@ -25,7 +24,6 @@ interface MainMenuProps {
   onOpenHistory: () => void;
   onOpenAuth: () => void;
   onOpenLuckyWheel: () => void;
-  onOpenWorldChat: () => void;
 }
 
 export const MainMenu: React.FC<MainMenuProps> = ({
@@ -37,8 +35,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
   onOpenLeaderboard,
   onOpenHistory,
   onOpenAuth,
-  onOpenLuckyWheel,
-  onOpenWorldChat
+  onOpenLuckyWheel
 }) => {
   const char = getCharacterById(profile.characterId);
   const canFreeSpin = canSpinToday(profile.lastDailySpinTime);
@@ -181,11 +178,6 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             </span>
           </button>
         </div>
-
-        <button onClick={onOpenWorldChat}
-          className="w-full mb-3 bg-[#216c60] border-2 border-[#e5ca81] rounded-xl p-3 text-amber-100 font-black text-sm flex items-center justify-center gap-2 hover:bg-[#287e70] cursor-pointer">
-          <MessageSquare className="w-5 h-5" /> 🌍 KÊNH CHAT THẾ GIỚI
-        </button>
 
         {/* Secondary Navigation Strip */}
         <div className="w-full grid grid-cols-2 sm:grid-cols-4 gap-2">

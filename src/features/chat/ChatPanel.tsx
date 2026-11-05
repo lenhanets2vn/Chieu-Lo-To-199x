@@ -3,20 +3,15 @@ import { RETRO_9X_EMOJIS, ChatMessage, renderChatEmojiCodes } from './yahooEmoji
 import { audioSynthesizer } from '../audio/audioSynthesizer';
 import { RetroButton } from '../../components/ui/RetroButton';
 import type { FilterResult } from './profanityFilter';
-import { Smile, Send, BellRing, MicOff, Globe, Users, Share2, Sparkles, AlertTriangle } from 'lucide-react';
+import { Smile, Send, BellRing, MicOff, Users, Sparkles, AlertTriangle } from 'lucide-react';
 
 interface ChatPanelProps {
   userId?: string;
   messages: ChatMessage[];
-  onSendMessage: (text: string, channel: 'room' | 'world', isVipEmoji?: string) => Promise<FilterResult>;
+  onSendMessage: (text: string, isVipEmoji?: string) => Promise<FilterResult>;
   onSendBuzz: () => void;
   currentRoomCode?: string;
-  roomCapacity?: number;
   isInsideRoom: boolean;
-  channel: 'room' | 'world';
-  onOpenWorldChat?: () => void;
-  onShareRoomToWorld?: () => void;
-  onJoinRoomFromChat?: (code: string) => void;
   unlockedVipEmojis?: string[];
   onTriggerVipEffect?: (effectType: string) => void;
   connectionState?: 'connecting' | 'online' | 'offline' | 'error';
@@ -30,19 +25,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onSendMessage,
   onSendBuzz,
   currentRoomCode,
-  roomCapacity,
   isInsideRoom,
-  channel,
-  onOpenWorldChat,
-  onShareRoomToWorld,
-  onJoinRoomFromChat,
   onTriggerVipEffect,
   unlockedVipEmojis = [],
   connectionState = 'connecting',
   connectionError = null,
   onRetry
 }) => {
-  const activeTab = channel;
   const [inputText, setInputText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiTab, setEmojiTab] = useState<'retro' | 'vip'>('retro');
@@ -53,7 +42,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, activeTab]);
+  }, [messages]);
 
 
   const handleSend = async (e?: React.FormEvent) => {
@@ -68,7 +57,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     try {
       // Only the Firebase service performs the rate-limit check. The old second
       // check rejected every message as spam before it reached Firestore.
-      const result = await onSendMessage(text, activeTab);
+      const result = await onSendMessage(text);
       if (!result.allowed) {
         setFilterWarning(result.reason || 'Không gửi được tin nhắn.');
         return;
@@ -95,13 +84,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
     audioSynthesizer.playClick();
     onTriggerVipEffect?.(effect);
-    void onSendMessage(`[VIP ${symbol}] ${name}!`, activeTab, effect).then(result => {
+    void onSendMessage(`[VIP ${symbol}] ${name}!`, effect).then(result => {
       if (!result.allowed) setFilterWarning(result.reason || 'Không gửi được biểu tượng.');
     });
     setShowEmojiPicker(false);
   };
 
-  const filteredMessages = messages.filter(m => m.channel === activeTab || m.channel === 'system');
+  const filteredMessages = messages.filter(m => m.channel === 'room' || m.channel === 'system');
 
   return (
     <div className="bg-[#f0f0f0] border-2 border-[#808080] win98-box p-1 text-black flex flex-col h-full font-sans text-xs">
@@ -109,7 +98,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       <div className="bg-gradient-to-r from-[#1e3a8a] to-[#2563eb] text-white px-2 py-1 flex items-center justify-between font-bold rounded-t-sm shadow-inner">
         <div className="flex items-center gap-1.5">
           <span className="text-yellow-300 font-pixel text-sm">💬</span>
-          <span className="tracking-tight font-pixel text-sm">{channel === 'world' ? '🌍 CHAT THẾ GIỚI' : '🏮 CHAT TRONG PHÒNG'}</span>
+          <span className="tracking-tight font-pixel text-sm">🏮 CHAT TRONG PHÒNG</span>
           <span role="status" className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${connectionState === 'online' ? 'bg-emerald-700' : connectionState === 'error' ? 'bg-red-700' : 'bg-amber-700'}`}>
             {connectionState === 'error' ? 'Không thể gửi tin' : connectionState === 'offline' ? 'Đang kết nối lại…' : connectionState === 'connecting' ? 'Đang vào chat…' : 'Trò chuyện'}
           </span>
@@ -132,20 +121,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           {onRetry && <button type="button" className="bg-red-800 text-white px-2 py-1 rounded cursor-pointer whitespace-nowrap" onClick={onRetry}>Thử kết nối lại</button>}
         </div>
       )}
-      {/* Separate panels; no cross-channel tabs or cached history mixing. */}
-      <div className="flex flex-wrap items-center justify-between gap-1 bg-[#d4d0c8] border-b border-[#808080] px-2 py-1 text-[11px] font-semibold">
-        <span className="flex items-center gap-1">
-          {channel === 'room' ? <Users className="w-3.5 h-3.5" /> : <Globe className="w-3.5 h-3.5" />}
-          {channel === 'room' ? `Phòng ${currentRoomCode || ''}` : 'Kênh Thế Giới'}
-        </span>
-        {channel === 'room' && onOpenWorldChat && (
-          <button type="button" onClick={onOpenWorldChat} className="win98-btn flex items-center gap-1 px-2 py-0.5 bg-blue-800 text-white cursor-pointer">
-            <Globe className="w-3 h-3"/> Chat Thế Giới
-          </button>
-        )}
-        {channel === 'room' && onShareRoomToWorld && (
-          <button type="button" onClick={onShareRoomToWorld} className="text-blue-900 font-bold underline cursor-pointer" title="Mời người chơi vào phòng">Mời vào phòng</button>
-        )}
+      <div className="flex items-center justify-between bg-[#d4d0c8] border-b border-[#808080] px-2 py-1 text-[11px] font-semibold">
+        <span className="flex items-center gap-1"><Users className="w-3.5 h-3.5"/> Phòng {currentRoomCode || ''}</span>
       </div>
 
       {/* Voice is not advertised until WebRTC signaling and TURN are deployed. */}
@@ -179,10 +156,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             }
 
             const isVipMsg = msg.text.startsWith('[VIP');
-            const isInvite = msg.text.includes('[MÃ PHÒNG:');
-            const roomMatch = msg.text.match(/\[MÃ PHÒNG: #([A-Z0-9]+)\]/);
-            const extractedCode = roomMatch ? roomMatch[1] : null;
-
             return (
               <div key={msg.id} className={`text-xs leading-relaxed ${isVipMsg ? 'p-1.5 bg-amber-50 rounded border border-amber-300 font-semibold' : ''}`}>
                 <span className="font-bold text-blue-900 mr-1.5 hover:underline cursor-pointer">
@@ -190,19 +163,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 </span>
                 <span className="text-stone-800 break-words whitespace-pre-wrap">{renderChatEmojiCodes(msg.text)}</span>
 
-                {isInvite && extractedCode && onJoinRoomFromChat && (
-                  <div className="mt-1 p-1.5 bg-amber-50 border border-amber-300 rounded flex items-center justify-between">
-                    <span className="font-mono text-amber-900 font-bold text-[11px]">
-                      Phòng #{extractedCode}{roomCapacity ? ` (Sức chứa ${roomCapacity} người)` : ''}
-                    </span>
-                    <button
-                      onClick={() => onJoinRoomFromChat(extractedCode)}
-                      className="win98-btn bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] px-2 py-0.5 rounded cursor-pointer"
-                    >
-                      Vào Chơi Ngay
-                    </button>
-                  </div>
-                )}
               </div>
             );
           })
@@ -299,7 +259,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           maxLength={180}
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
-          placeholder={activeTab === 'room' ? 'Gõ tin nhắn phòng (tối đa 180 ký tự)...' : 'Gõ tin nhắn kênh thế giới...'}
+          placeholder="Gõ tin nhắn phòng (tối đa 180 ký tự)..."
           className="flex-1 bg-white border border-[#808080] px-2 py-1 text-xs text-black outline-none win98-box-inset font-sans"
         />
 

@@ -143,12 +143,12 @@ export const UNLOCKABLE_CATALOG: UnlockableItem[] = [
     unlocked: false
   },
 
-  // 3. VIP CHAT EMOJIS (Có hiệu ứng đặc biệt toàn màn hình phòng & thế giới)
+  // 3. VIP CHAT EMOJIS (Có hiệu ứng đặc biệt trong phòng)
   {
     id: 'vip_fireworks',
     name: 'Pháo Hoa Giao Thừa',
     type: 'chat_vip_emoji',
-    description: 'Bắn chùm pháo hoa ngũ sắc rực rỡ ngập tràn màn hình cho toàn bộ phòng và kênh thế giới cùng chiêm ngưỡng!',
+    description: 'Bắn chùm pháo hoa ngũ sắc rực rỡ ngập tràn màn hình cho toàn bộ người chơi trong phòng cùng chiêm ngưỡng!',
     requiredLevel: 2,
     previewIcon: '🎆',
     costCoins: 7500,
