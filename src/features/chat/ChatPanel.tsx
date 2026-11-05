@@ -111,7 +111,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <span className="text-yellow-300 font-pixel text-sm">💬</span>
           <span className="tracking-tight font-pixel text-sm">{channel === 'world' ? '🌍 CHAT THẾ GIỚI' : '🏮 CHAT TRONG PHÒNG'}</span>
           <span role="status" className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${connectionState === 'online' ? 'bg-emerald-700' : connectionState === 'error' ? 'bg-red-700' : 'bg-amber-700'}`}>
-            {connectionState === 'error' ? 'Không thể gửi tin' : connectionState === 'offline' ? 'Mất mạng' : connectionState === 'connecting' ? 'Đang vào chat…' : 'Trò chuyện'}
+            {connectionState === 'error' ? 'Không thể gửi tin' : connectionState === 'offline' ? 'Đang kết nối lại…' : connectionState === 'connecting' ? 'Đang vào chat…' : 'Trò chuyện'}
           </span>
         </div>
         <div className="flex items-center gap-1">

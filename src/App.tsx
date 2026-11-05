@@ -63,7 +63,8 @@ import {
   flushPendingProfileSync, logoutPlayer
 } from './features/auth/firebaseAuthService';
 import { auth, db } from './services/firebase';
-import { sparkAdmissionEnabled } from './services/realtime';
+import { sparkAdmissionEnabled, realtimeConfigured, realtimeDatabase } from './services/realtime';
+import { onValue as onRtdbValue, ref as rtdbRef } from 'firebase/database';
 import { startOnlineAdmission, type AdmissionState } from './features/capacity/onlineAdmission';
 import { doc, getDoc, getDocFromServer, setDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { createStarterProfile } from './features/progression/progressionStore';
@@ -473,17 +474,61 @@ export default function App() {
     }
     if (!wantsChat || startedWorldChatForRef.current === readyUserId) return;
     startedWorldChatForRef.current = readyUserId;
-    beginWorldChatSession(readyUserId).then(joinedAt => {
-      if (auth.currentUser?.uid !== readyUserId) return;
+    const controller = new AbortController();
+    let settled = false;
+    beginWorldChatSession(readyUserId, controller.signal).then(joinedAt => {
+      settled = true;
+      if (controller.signal.aborted || auth.currentUser?.uid !== readyUserId) return;
       setWorldChatJoinedAt(joinedAt);
       setChatConnectionError(previous => ({ ...previous, world: null }));
     }).catch(() => {
-      if (auth.currentUser?.uid !== readyUserId) return;
+      settled = true;
+      if (controller.signal.aborted || auth.currentUser?.uid !== readyUserId) return;
       startedWorldChatForRef.current = null;
       setChatConnection(previous => ({ ...previous, world: 'error' }));
-      setChatConnectionError(previous => ({ ...previous, world: 'Không bắt đầu được trò chuyện. Hãy thử mở lại kênh.' }));
+      setChatConnectionError(previous => ({ ...previous, world: 'Không bắt đầu được trò chuyện. Kiểm tra kết nối hoặc thử lại.' }));
     });
+    return () => {
+      controller.abort();
+      if (!settled && startedWorldChatForRef.current === readyUserId) {
+        startedWorldChatForRef.current = null;
+      }
+    };
   }, [readyUserId, isWorldChatOpen, currentView, currentRoom?.id, matchRightTab, worldChatRetryKey]);
+
+  // Browser reconnection is a user-independent event: retry a failed initial
+  // session once the browser reports an online network, not on a polling loop.
+  useEffect(() => {
+    if (!readyUserId || worldChatJoinedAt) return;
+    const handleOnline = () => {
+      const wantsChat = isWorldChatOpen ||
+        (currentView === 'GAME_MATCH' && !currentRoom && matchRightTab === 'chat');
+      if (wantsChat) {
+        startedWorldChatForRef.current = null;
+        setWorldChatRetryKey(previous => previous + 1);
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [readyUserId, worldChatJoinedAt, isWorldChatOpen, currentView, currentRoom?.id, matchRightTab]);
+
+  // An RTDB socket can reconnect without firing the browser's `online`
+  // event (for example after a temporary server-side capacity rejection).
+  // Watch only while an unopened World Chat is visible; this metadata path
+  // never reads messages or writes to Firestore. Retry once on a false→true
+  // transition, and let the normal session effect own its cancellation.
+  useEffect(() => {
+    if (!readyUserId || worldChatJoinedAt || !isWorldChatOpen || !realtimeConfigured) return;
+    let previouslyConnected = false;
+    const stop = onRtdbValue(rtdbRef(realtimeDatabase(), '.info/connected'), snapshot => {
+      const nowConnected = snapshot.val() === true;
+      if (nowConnected && !previouslyConnected && startedWorldChatForRef.current !== readyUserId) {
+        setWorldChatRetryKey(previous => previous + 1);
+      }
+      previouslyConnected = nowConnected;
+    });
+    return () => stop();
+  }, [readyUserId, worldChatJoinedAt, isWorldChatOpen]);
 
   // Subscribe to real-time World chat from Firestore
   useEffect(() => {
@@ -508,13 +553,16 @@ export default function App() {
       });
     }, worldChatJoinedAt, error => {
       setChatConnection(previous => ({...previous, world:'error'}));
-      setChatConnectionError(previous => ({...previous, world:'Không tải được tin nhắn. Vui lòng thử lại.'}));
+      const code = (error as {code?:string}).code || '';
+      const detail = code.includes('permission') ? 'Kênh trò chuyện chưa được cấp quyền truy cập.'
+        : 'Không tải được tin nhắn. Kiểm tra mạng rồi thử lại.';
+      setChatConnectionError(previous => ({...previous, world:detail}));
     }, fromServer => {
       setChatConnection(previous => ({...previous, world:fromServer?'online':'offline'}));
       if (fromServer) setChatConnectionError(previous => ({...previous, world:null}));
     }, worldChatCursorRef.current ?? undefined);
     return () => unsubWorld();
-  }, [currentView, currentRoom?.id, matchRightTab, isWorldChatOpen, readyUserId, worldChatJoinedAt, pageVisible, consumeVipChatEffects]);
+  }, [currentView, currentRoom?.id, matchRightTab, isWorldChatOpen, readyUserId, worldChatJoinedAt, pageVisible, worldChatRetryKey, consumeVipChatEffects]);
 
   // Gameplay listeners are stable for the lifetime of one room: switching chat tabs
   // MUST NOT detach and re-query room/members/state (billable initial reads).
@@ -2273,10 +2321,11 @@ export default function App() {
                 connectionState={chatConnection.world}
                 connectionError={chatConnectionError.world}
                 onRetry={() => {
-                  startedWorldChatForRef.current = null;
-                  worldChatCursorRef.current = null;
-                  setWorldChatJoinedAt(null);
-                  setMessages(existing => existing.filter(message => message.channel !== 'world'));
+                  // Keep the server-side chat session and received messages.
+                  // Retrying should resubscribe, not write a new session/erase history.
+                  if (!worldChatJoinedAt) startedWorldChatForRef.current = null;
+                  setChatConnection(previous => ({...previous, world:'connecting'}));
+                  setChatConnectionError(previous => ({...previous, world:null}));
                   setWorldChatRetryKey(previous => previous + 1);
                 }}
                 onSendMessage={handleSendMessage} onSendBuzz={() => {}}

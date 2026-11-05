@@ -5,10 +5,9 @@
  * exceed 90 active slots using the bounded RTDB keyspace (0..89).
  */
 import { collection, deleteDoc, doc, getDoc, limit, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc, type Timestamp } from 'firebase/firestore';
-import { get, goOffline, goOnline, onDisconnect, onValue, ref, remove, serverTimestamp as rtServerTimestamp, set, type DatabaseReference } from 'firebase/database';
+import { get, onDisconnect, onValue, ref, remove, serverTimestamp as rtServerTimestamp, set, type DatabaseReference } from 'firebase/database';
 import { auth, db } from '../../services/firebase';
 import { realtimeDatabase } from '../../services/realtime';
-import { isRealtimeWorldChatSubscribed } from '../chat/firebaseChatService';
 
 export type AdmissionState = {
   status: 'connecting' | 'waiting' | 'active' | 'error';
@@ -56,7 +55,6 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
     if (!validUser() || !queueLeader || admitted || trying) return;
     trying = true;
     try {
-      goOnline(rtdb);
       await awaitConnection();
       if (!validUser()) return;
       // Read at most 90 tiny public admission records once per attempt. A client
@@ -111,7 +109,6 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
         stopActiveConnection?.(); stopActiveConnection = null;
         admitted = false;
         notify({ status: 'connecting', message: 'Mất kết nối. Đang chờ được vào lại…' });
-        if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb);
         void start();
       });
     } catch (e) {
@@ -119,9 +116,7 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
       // A full DB is expected; other errors are retried, not exposed as backend names.
       notify({ status: 'waiting', message: 'Hệ thống đang đủ người. Bạn đang ở hàng chờ.' });
       if (occupiedSlot) await onDisconnect(occupiedSlot).cancel().catch(() => {});
-      // Do not disconnect another feature's world-chat listener: both features
-    // use the same RTDB connection. Waiters without chat stay disconnected.
-    if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb);
+      // RTDB manages the socket; never disconnect unrelated chat listeners.
     } finally { trying = false; }
   };
 
@@ -157,8 +152,7 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
       if (validUser()) notify({ status: 'error', message: 'Không vào được hàng chờ. Kiểm tra kết nối và quyền truy cập.' });
     }
   };
-  // Stop RTDB sockets while waiting; start() only uses Firestore until queue leader.
-  if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb);
+  // Waiting primarily uses Firestore; no forced connection disconnects.
   void start();
   return () => {
     stopped = true;
@@ -168,6 +162,5 @@ export function startOnlineAdmission(uid: string, notify: (state: AdmissionState
     if (leaseTimer) clearInterval(leaseTimer);
     if (admitted && occupiedSlot) void remove(occupiedSlot).catch(() => {});
     else void deleteDoc(waitingRef).catch(() => {});
-    if (!isRealtimeWorldChatSubscribed()) goOffline(rtdb); // releases presence only if no chat subscriber
   };
 }

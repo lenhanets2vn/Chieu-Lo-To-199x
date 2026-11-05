@@ -1,0 +1,13 @@
+# Firebase Web config — dự án hiện hành (loto-83a1a)
+# Chỉ dùng để cấu hình Vite. KHÔNG đưa mật khẩu hoặc service-account JSON vào VITE_*.
+
+VITE_FIREBASE_API_KEY=AIzaSyDBxXyrffg9Mauyr0vYmoZyR4GG_RiV0Q4
+VITE_FIREBASE_AUTH_DOMAIN=loto-83a1a.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=loto-83a1a
+VITE_FIREBASE_APP_ID=1:401789333507:web:761e676210b64b50d1de36
+VITE_FIREBASE_MESSAGING_SENDER_ID=401789333507
+VITE_FIREBASE_STORAGE_BUCKET=loto-83a1a.firebasestorage.app
+VITE_FIRESTORE_DATABASE_ID=(default)
+
+# Nếu RTDB liên tục bị từ chối và muốn chuyển TẤT CẢ người chơi về Firestore:
+# VITE_WORLD_CHAT_TRANSPORT=firestore
